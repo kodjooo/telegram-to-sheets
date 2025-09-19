@@ -1,0 +1,10 @@
+---
+alwaysApply: true
+---
+- Keep tasks as simple as possible.
+- Dont do anything unnecessary.
+- All comments in the code should be in Russian only
+- Each component should run smoothly in Docker and be included in the main docker-compose.yml
+- Use Context7 MCP when you need up-to-date and relevant information about software libraries and frameworks like React, Next.js, Tailwind, or Zod.
+- Don't write .md files for any reason, the project only needs one file of this type (README.md) information should also be added to it very selectively - only the most important information is needed
+- Always check after any file changes whether it is necessary to make changes to the file (README.md) in connection with this.

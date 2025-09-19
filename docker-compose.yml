@@ -1,0 +1,30 @@
+version: '3.8'
+
+services:
+  telegram-to-sheets:
+    build: .
+    container_name: telegram-to-sheets-app
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+    volumes:
+      # Подключение логов для сохранения на хосте
+      - ./logs:/app/logs
+      # Подключение файла с последним ID для сохранения состояния
+      - ./app/last_message_id.txt:/app/last_message_id.txt
+      # Подключение сессии Telegram для сохранения состояния
+      - ./app/session.session:/app/session.session
+    networks:
+      - telegram-network
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+networks:
+  telegram-network:
+    driver: bridge
+
+volumes:
+  logs:
