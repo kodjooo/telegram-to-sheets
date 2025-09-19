@@ -6,7 +6,7 @@
 
 ```bash
 # Клонирование репозитория
-git clone https://github.com/YOUR_USERNAME/telegram-to-sheets.git
+git clone https://github.com/kodjooo/telegram-to-sheets.git
 cd telegram-to-sheets
 
 # Настройка конфигурации (создайте файлы с вашими данными)
@@ -90,7 +90,7 @@ docker-compose logs -f
 2. **Загрузите код в репозиторий:**
    ```bash
    # Если у вас уже есть локальная копия проекта
-   git remote add origin https://github.com/YOUR_USERNAME/telegram-to-sheets.git
+   git remote add origin https://github.com/kodjooo/telegram-to-sheets.git
    git branch -M main
    git add .
    git commit -m "Initial commit: Telegram to Google Sheets analyzer"
@@ -101,13 +101,13 @@ docker-compose logs -f
 
 1. **Клонируйте репозиторий:**
    ```bash
-   git clone https://github.com/YOUR_USERNAME/telegram-to-sheets.git
+   git clone https://github.com/kodjooo/telegram-to-sheets.git
    cd telegram-to-sheets
    ```
    
-   > **Примечание:** Замените `YOUR_USERNAME` на ваше имя пользователя GitHub или используйте SSH:
+   > **Примечание:** Также можно использовать SSH для клонирования:
    > ```bash
-   > git clone git@github.com:YOUR_USERNAME/telegram-to-sheets.git
+   > git clone git@github.com:kodjooo/telegram-to-sheets.git
    > ```
 
 2. **Настройте конфигурацию:**
@@ -139,7 +139,7 @@ docker-compose logs -f
 2. **Клонируйте репозиторий на сервер:**
    ```bash
    ssh user@server
-   git clone https://github.com/YOUR_USERNAME/telegram-to-sheets.git
+   git clone https://github.com/kodjooo/telegram-to-sheets.git
    cd telegram-to-sheets
    ```
    
