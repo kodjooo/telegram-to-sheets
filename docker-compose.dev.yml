@@ -1,0 +1,40 @@
+version: '3.8'
+
+services:
+  telegram-to-sheets-dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    container_name: telegram-to-sheets-dev
+    restart: unless-stopped
+    environment:
+      - TZ=Europe/Moscow
+      - DEVELOPMENT=true
+    volumes:
+      # Bind mount для live-reload кода приложения
+      - ./app:/app:rw
+      # Подключение логов для сохранения на хосте
+      - ./logs:/app/logs
+      # Подключение файла с последним ID для сохранения состояния
+      - ./app/last_message_id.txt:/app/last_message_id.txt
+      # Подключение сессии Telegram для сохранения состояния
+      - ./app/session.session:/app/session.session
+    networks:
+      - telegram-network-dev
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # Для разработки можем пробросить порт для отладки
+    ports:
+      - "5000:5000"  # На случай если добавим веб-интерфейс для отладки
+    # Команда для режима разработки
+    command: ["/entrypoint-dev.sh"]
+
+networks:
+  telegram-network-dev:
+    driver: bridge
+
+volumes:
+  logs:

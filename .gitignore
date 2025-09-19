@@ -10,6 +10,9 @@ logs/
 # Файлы состояния
 app/last_message_id.txt
 
+# Логи разработки
+app/logs/dev.log
+
 # Docker
 .env
 

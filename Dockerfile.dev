@@ -1,0 +1,51 @@
+# Dockerfile для разработки с дополнительными инструментами
+FROM python:3.11-slim
+
+# Установка системных зависимостей + инструменты разработки
+RUN apt-get update && apt-get install -y \
+    cron \
+    tzdata \
+    inotify-tools \
+    curl \
+    vim \
+    nano \
+    htop \
+    && rm -rf /var/lib/apt/lists/*
+
+# Установка рабочей директории
+WORKDIR /app
+
+# Копирование файла зависимостей
+COPY requirements.txt .
+
+# Установка Python зависимостей
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Установка дополнительных инструментов для разработки
+RUN pip install --no-cache-dir \
+    watchdog \
+    ipdb \
+    pytest \
+    black \
+    flake8
+
+# В режиме разработки код монтируется через volume
+# Создаем только базовую структуру
+
+# Создание папки для логов
+RUN mkdir -p /app/logs
+
+# Установка переменной окружения для временной зоны
+ENV TZ=Europe/Moscow
+
+# Копирование crontab файла и установка cron заданий
+COPY crontab /etc/cron.d/telegram-app-cron
+RUN chmod 0644 /etc/cron.d/telegram-app-cron && \
+    crontab /etc/cron.d/telegram-app-cron
+
+# Создание точки входа для разработки
+COPY entrypoint-dev.sh /entrypoint-dev.sh
+RUN chmod +x /entrypoint-dev.sh
+
+# Установка точки входа для разработки
+ENTRYPOINT ["/entrypoint-dev.sh"]
