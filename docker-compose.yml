@@ -8,12 +8,10 @@ services:
     environment:
       - TZ=Europe/Moscow
     volumes:
+      # Подключение папки приложения для live-reload (разработка)
+      - ./app:/app
       # Подключение логов для сохранения на хосте
       - ./logs:/app/logs
-      # Подключение файла с последним ID для сохранения состояния
-      - ./app/last_message_id.txt:/app/last_message_id.txt
-      # Подключение сессии Telegram для сохранения состояния
-      - ./app/session.session:/app/session.session
     networks:
       - telegram-network
     logging:
