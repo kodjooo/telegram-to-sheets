@@ -1,28 +1,25 @@
-version: '3.8'
-
 services:
   telegram-to-sheets:
     build: .
     container_name: telegram-to-sheets-app
     restart: unless-stopped
+    
+    # ========= HOST NETWORK MODE =========
+    # Использует сеть хоста напрямую - обходит все Docker network ограничения
+    network_mode: "host"
+    # ====================================
+    
     environment:
       - TZ=Europe/Moscow
+    
     volumes:
       # Подключение папки приложения для live-reload (разработка)
       - ./app:/app
       # Подключение логов для сохранения на хосте
       - ./logs:/app/logs
-    networks:
-      - telegram-network
+    
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-
-networks:
-  telegram-network:
-    driver: bridge
-
-volumes:
-  logs:
