@@ -8,15 +8,15 @@ import re
 import random
 import functools
 import sqlite3
+
 import gspread
 from googleapiclient.errors import HttpError
-
-from telethon import TelegramClient
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
-
 from googleapiclient.discovery import build
 from google.oauth2.service_account import Credentials as GoogleCreds
+from google.auth.exceptions import TransportError as GoogleTransportError
+from oauth2client.service_account import ServiceAccountCredentials
+from requests import exceptions as requests_exceptions
+from telethon import TelegramClient
 
 # Константы
 BASE_DIR = '/app'
@@ -204,40 +204,76 @@ def extract_error_and_address(text):
 
     return cleaned_text.strip(), address
 
+TRANSIENT_HTTP_STATUSES = {408, 409, 429, 500, 502, 503, 504}
+
+
 async def retry_gspread(func, *args, retries=5, delay=3, backoff=2, **kwargs):
+    current_delay = delay
     for attempt in range(retries):
         try:
             result = func(*args, **kwargs)
             if asyncio.iscoroutine(result):
                 return await result
             return result
+        except gspread.exceptions.WorksheetNotFound:
+            raise
         except gspread.exceptions.APIError as e:
-            if '503' in str(e) or '502' in str(e) or 'temporarily_unavailable' in str(e):
-                await asyncio.sleep(delay + random.uniform(0, 2))
-                delay *= backoff
-            else:
+            status = None
+            if hasattr(e, 'response') and e.response is not None:
+                status = getattr(e.response, 'status', None) or getattr(e.response, 'status_code', None)
+            if status is None:
+                match = re.search(r'\[(\d{3})\]', str(e))
+                if match:
+                    status = int(match.group(1))
+            message = str(e).lower()
+            is_transient = (
+                (status in TRANSIENT_HTTP_STATUSES) or
+                ('temporarily unavailable' in message) or
+                ('internal error encountered' in message) or
+                ('operation was aborted' in message)
+            )
+            if not is_transient or attempt == retries - 1:
                 raise
+            logging.warning("gspread transient error (%s) on attempt %s/%s: %s", status, attempt + 1, retries, e)
+            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            current_delay *= backoff
+        except (GoogleTransportError, requests_exceptions.RequestException, OSError) as e:
+            if attempt == retries - 1:
+                raise
+            logging.warning("Network error on attempt %s/%s for %s: %s", attempt + 1, retries, func.__name__, e)
+            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            current_delay *= backoff
         except Exception as e:
             if attempt == retries - 1:
                 raise
-            await asyncio.sleep(delay + random.uniform(0, 2))
-            delay *= backoff
+            logging.warning("Unexpected error on attempt %s/%s for %s: %s", attempt + 1, retries, func.__name__, e)
+            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            current_delay *= backoff
+
 
 async def retry_google_api(api_call, retries=5, delay=3, backoff=2):
+    current_delay = delay
     for attempt in range(retries):
         try:
             return api_call()
         except HttpError as e:
-            if e.resp.status in [502, 503, 504]:
-                await asyncio.sleep(delay + random.uniform(0, 2))
-                delay *= backoff
-            else:
+            if e.resp.status not in TRANSIENT_HTTP_STATUSES or attempt == retries - 1:
                 raise
+            logging.warning("Google API transient HttpError %s on attempt %s/%s", e.resp.status, attempt + 1, retries)
+            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            current_delay *= backoff
+        except (GoogleTransportError, requests_exceptions.RequestException, OSError) as e:
+            if attempt == retries - 1:
+                raise
+            logging.warning("Google API network error on attempt %s/%s: %s", attempt + 1, retries, e)
+            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            current_delay *= backoff
         except Exception as e:
             if attempt == retries - 1:
                 raise
-            await asyncio.sleep(delay + random.uniform(0, 2))
-            delay *= backoff
+            logging.warning("Unexpected Google API error on attempt %s/%s: %s", attempt + 1, retries, e)
+            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            current_delay *= backoff
 
 
 def count_and_aggregate(logs):
@@ -268,6 +304,8 @@ def count_and_aggregate(logs):
 # ===== Основная логика =====
 
 async def main():
+    config = {}
+    client = None
     try:
         os.chdir(BASE_DIR)
         clean_old_logs(LOG_PATH, days=7)
@@ -310,25 +348,36 @@ async def main():
             scopes=['https://www.googleapis.com/auth/spreadsheets']
         )
         sheets_api = build('sheets', 'v4', credentials=google_creds, cache_discovery=False)
-        spreadsheet = client_gs.open_by_key(config['google_sheet_id'])
+        spreadsheet = await retry_gspread(client_gs.open_by_key, config['google_sheet_id'])
         try:
-            sheet_raw = spreadsheet.worksheet('Original data')
+            sheet_raw = await retry_gspread(spreadsheet.worksheet, 'Original data')
         except gspread.exceptions.WorksheetNotFound:
-            sheet_raw = spreadsheet.add_worksheet(title='Original data', rows='1000', cols='10')
+            sheet_raw = await retry_gspread(
+                spreadsheet.add_worksheet,
+                title='Original data',
+                rows='1000',
+                cols='10'
+            )
 
         # ✅ Добавление заголовков, если их нет
         existing = await retry_gspread(sheet_raw.get_all_values)
         if not existing or not any(cell.strip() for cell in existing[0]):
-            sheet_raw.insert_row(['ID', 'Дата', 'Текст'], index=1)
+            await retry_gspread(sheet_raw.insert_row, ['ID', 'Дата', 'Текст'], index=1)
         try:
-            sheet_groups = spreadsheet.worksheet('Groups')
+            sheet_groups = await retry_gspread(spreadsheet.worksheet, 'Groups')
         except gspread.exceptions.WorksheetNotFound:
-            sheet_groups = spreadsheet.add_worksheet(title='Groups', rows='100', cols='20')
+            sheet_groups = await retry_gspread(
+                spreadsheet.add_worksheet,
+                title='Groups',
+                rows='100',
+                cols='20'
+            )
 
         # Гарантированно добавим заголовки, если пусто
         group_values = await retry_gspread(sheet_groups.get_all_values)
         if not group_values or not any(cell.strip() for cell in group_values[0]):
-            sheet_groups.update(
+            await retry_gspread(
+                sheet_groups.update,
                 values=[[
                     "Категория", "Ошибка (шаблон)", "Адреса", "Код из Bitbucket", "GPT-ответ",
                     "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление", "Статус"
@@ -343,7 +392,7 @@ async def main():
 
         # Читаем ВСЕ логи с первой вкладки для анализа
         # Удаляем строки из Original data старше 30 дней
-        raw_rows = sheet_raw.get_all_values()
+        raw_rows = await retry_gspread(sheet_raw.get_all_values)
         header = raw_rows[0]
         rows_to_keep = [header]
         cutoff = datetime.now() - timedelta(days=30)
@@ -409,7 +458,8 @@ async def main():
         group_rows_all = await retry_gspread(sheet_groups.get_all_values)
         # Проверяем, есть ли заголовки (первый элемент непустой)
         if not group_rows_all or not any(group_rows_all[0]):
-            sheet_groups.update(
+            await retry_gspread(
+                sheet_groups.update,
                 values=[[
                     "Категория",
                     "Ошибка (шаблон)",
@@ -527,34 +577,39 @@ async def main():
             scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
             creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
             client_gs = gspread.authorize(creds)
-            spreadsheet = client_gs.open_by_key(config['google_sheet_id'])
-            sheet_groups = spreadsheet.worksheet('Groups')
-
-            # Получаем все строки
-            all_rows = sheet_groups.get_all_values()
-            if not all_rows:
-                logging.info("Вкладка Groups пуста, сортировка не требуется.")
+            sheet_id = config.get('google_sheet_id')
+            if not sheet_id:
+                logging.warning("Идентификатор Google Sheet не найден в конфиге, пропускаем сортировку.")
             else:
-                header = all_rows[0]
-                body = all_rows[1:] if len(all_rows) > 1 else []
+                spreadsheet = await retry_gspread(client_gs.open_by_key, sheet_id)
+                sheet_groups = await retry_gspread(spreadsheet.worksheet, 'Groups')
 
-                def parse_row(row):
-                    try:
-                        return int(row[5]) if len(row) > 5 and row[5].strip().isdigit() else 0
-                    except:
-                        return 0
+                # Получаем все строки
+                all_rows = await retry_gspread(sheet_groups.get_all_values)
+                if not all_rows:
+                    logging.info("Вкладка Groups пуста, сортировка не требуется.")
+                else:
+                    header = all_rows[0]
+                    body = all_rows[1:] if len(all_rows) > 1 else []
 
-                body.sort(key=parse_row, reverse=True)
-                new_data = [header] + body
+                    def parse_row(row):
+                        try:
+                            return int(row[5]) if len(row) > 5 and row[5].strip().isdigit() else 0
+                        except:
+                            return 0
 
-                await retry_gspread(sheet_groups.clear)
-                await retry_gspread(sheet_groups.append_rows, new_data)
-                logging.info("Вкладка 'Groups' отсортирована по столбцу 'За 1 день' (через Python).")
+                    body.sort(key=parse_row, reverse=True)
+                    new_data = [header] + body
+
+                    await retry_gspread(sheet_groups.clear)
+                    await retry_gspread(sheet_groups.append_rows, new_data)
+                    logging.info("Вкладка 'Groups' отсортирована по столбцу 'За 1 день' (через Python).")
 
         except Exception as sort_error:
             logging.error(f"Ошибка при сортировке вкладки Groups: {sort_error}")
 
-        await client.disconnect()
+        if client is not None:
+            await client.disconnect()
         logging.info("Скрипт успешно завершил работу.")
 
 if __name__ == '__main__':
