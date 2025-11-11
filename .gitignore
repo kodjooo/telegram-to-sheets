@@ -2,6 +2,7 @@
 app/config.json
 app/google-credentials.json
 app/session.session
+session.session
 
 # Логи
 logs/
