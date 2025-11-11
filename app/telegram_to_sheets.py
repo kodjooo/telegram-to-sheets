@@ -7,6 +7,7 @@ from collections import defaultdict
 import re
 import random
 import functools
+import sqlite3
 import gspread
 from googleapiclient.errors import HttpError
 
