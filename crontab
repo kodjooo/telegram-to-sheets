@@ -1,3 +1,6 @@
+# Указываем путь к python внутри python:3.11-slim
+PATH=/usr/local/bin:/usr/bin:/bin
+
 # Обработка сообщений Telegram каждые 30 минут
 */30 * * * * cd /app && python telegram_to_sheets.py >> /app/logs/telegram_to_sheets.log 2>&1
 
