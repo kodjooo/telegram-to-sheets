@@ -20,6 +20,10 @@ docker-compose logs -f
 ```
 
 > **Важно:** Перед запуском убедитесь, что у вас настроены все необходимые API ключи в файле `config.json`.
+>
+> **Примечание:** В `docker-compose.yml` включен `network_mode: "host"`. Такой режим поддерживается на Linux. Если вы используете Docker Desktop (macOS/Windows), удалите эту строку или замените сеть на совместимую.
+>
+> **Логи:** Каталог `./logs` c хоста примонтирован внутрь контейнера как `/app/logs`, поэтому файлы логов сразу доступны вне контейнера.
 
 ## Функциональность
 
@@ -175,16 +179,42 @@ docker-compose logs -f
 
 Все времена указаны в часовом поясе Europe/Moscow.
 
+## Скрипты, расписание и ручной запуск
+
+| Скрипт | Cron | Лог-файл (в `./logs`) | Назначение | Ручной запуск |
+| --- | --- | --- | --- | --- |
+| `telegram_to_sheets.py` | `*/30 * * * *` | `telegram_to_sheets.log` | Забирает новые сообщения из Telegram, обновляет листы `Original data` и `Groups`, чистит устаревшие записи | `docker exec telegram-to-sheets-app python telegram_to_sheets.py` |
+| `fetch_code_from_bitbucket.py` | `0 6 * * *` | `fetch_code_cron.log` | Находит адреса ошибок и подтягивает фрагменты кода из Bitbucket | `docker exec telegram-to-sheets-app python fetch_code_from_bitbucket.py` |
+| `process_unhandled_errors.py` | `10 6 * * *` | `gpt_process.log` | Отправляет необработанные ошибки и контекст в GPT, записывает ответ и меняет статус | `docker exec telegram-to-sheets-app python process_unhandled_errors.py` |
+| `unknown_transaction.py` | `19 6 * * *` | `unknown_tx.log` | Формирует лист `Unknown tx` по логам «Unknown transaction type» | `docker exec telegram-to-sheets-app python unknown_transaction.py` |
+| `send_daily_summary.py` | `20 6 * * *` | `daily_summary.log` | Считает статистику за сутки и отправляет отчет в Telegram | `docker exec telegram-to-sheets-app python send_daily_summary.py` |
+
+> Любой скрипт можно запускать вне расписания теми же командами.
+
 ## Мониторинг и логи
 
-### Просмотр логов:
+### Где искать логи
+- Все файлы находятся на хосте в каталоге `./logs` (он смонтирован в контейнер как `/app/logs`).
+- `docker logs telegram-to-sheets-app` показывает поток из `telegram_to_sheets.log`, потому что `entrypoint.sh` делает `tail -f` именно по этому файлу.
+
+### Просмотр из контейнера
 ```bash
 # Все логи контейнера
 docker-compose logs -f
 
-# Логи конкретных модулей
+# Основной сборщик ошибок из Telegram
 docker exec telegram-to-sheets-app tail -f /app/logs/telegram_to_sheets.log
+
+# Получение кода из Bitbucket
+docker exec telegram-to-sheets-app tail -f /app/logs/fetch_code_cron.log
+
+# Обработка ошибок через GPT
 docker exec telegram-to-sheets-app tail -f /app/logs/gpt_process.log
+
+# Анализ Unknown transaction type
+docker exec telegram-to-sheets-app tail -f /app/logs/unknown_tx.log
+
+# Отправка ежедневного отчета
 docker exec telegram-to-sheets-app tail -f /app/logs/daily_summary.log
 ```
 
@@ -198,6 +228,12 @@ crontab -l
 
 # Ручной запуск скрипта
 cd /app && python telegram_to_sheets.py
+
+# По аналогии:
+# cd /app && python fetch_code_from_bitbucket.py
+# cd /app && python process_unhandled_errors.py
+# cd /app && python unknown_transaction.py
+# cd /app && python send_daily_summary.py
 ```
 
 ## Управление контейнером
