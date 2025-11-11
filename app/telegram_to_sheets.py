@@ -103,24 +103,18 @@ SPECIAL_PATTERNS = [
     "Disk space is critically low"
 ]
 
+CATEGORY_SHEET_TITLE = 'Categories'
+CATEGORY_HEADER = ["Категория", "Триггер"]
+
 def should_normalize(text: str) -> bool:
     return any(pattern in text for pattern in SPECIAL_PATTERNS)
 
-def extract_category(error_pattern: str) -> str:
-    if "timed out" in error_pattern:
-        return "TimedOut"
-    if "Введен не валидный API ключ" in error_pattern:
-        return "WrongApi"
-    if "data was invalid" in error_pattern:
-        return "InvalidData"
-    if "on null" in error_pattern:
-        return "NullProperty"
-    if "api key not working" in error_pattern:
-        return "ApiKeyNotWorking"
-    if "ClientID" in error_pattern:
-        return "InvalidClientID"
-    if any(pat in error_pattern for pat in ["paymentFailed", "payment failed", "payment error"]):
-        return "PaymentFailed"
+def extract_category(error_pattern: str, category_rules: dict | None = None) -> str:
+    pattern_lower = error_pattern.lower()
+    if category_rules:
+        for category, triggers in category_rules.items():
+            if any(trigger in pattern_lower for trigger in triggers):
+                return category
     """
     Извлекает категорию по шаблону:
     production.WARNING: SYNC: ...  → SYNC
@@ -276,6 +270,37 @@ async def retry_google_api(api_call, retries=5, delay=3, backoff=2):
             current_delay *= backoff
 
 
+async def load_category_rules(spreadsheet):
+    try:
+        sheet = await retry_gspread(spreadsheet.worksheet, CATEGORY_SHEET_TITLE)
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = await retry_gspread(
+            spreadsheet.add_worksheet,
+            title=CATEGORY_SHEET_TITLE,
+            rows='200',
+            cols='2'
+        )
+        await retry_gspread(sheet.update, values=[CATEGORY_HEADER], range_name='A1:B1')
+
+    rows = await retry_gspread(sheet.get_all_values)
+    if not rows:
+        await retry_gspread(sheet.update, values=[CATEGORY_HEADER], range_name='A1:B1')
+        rows = [CATEGORY_HEADER]
+
+    rules = defaultdict(list)
+    for row in rows[1:]:
+        if len(row) < 2:
+            continue
+        category = row[0].strip()
+        trigger = row[1].strip().lower()
+        if not category or not trigger:
+            continue
+        if trigger not in rules[category]:
+            rules[category].append(trigger)
+
+    return rules
+
+
 def count_and_aggregate(logs):
     now = datetime.now(timezone.utc)
     error_data = defaultdict(lambda: {
@@ -384,6 +409,8 @@ async def main():
                 ]],
                 range_name='A1:J1'
             )
+
+        category_rules = await load_category_rules(spreadsheet)
 
         # Добавляем новые сообщения в первую вкладку
         await retry_gspread(sheet_raw.append_rows, rows_raw)
@@ -507,7 +534,7 @@ async def main():
             addresses_str = ', '.join(sorted(data['addresses']))
             last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
 
-            category = extract_category(error_pattern)
+            category = extract_category(error_pattern, category_rules)
             new_row = [
                 category,
                 error_pattern,
@@ -529,7 +556,7 @@ async def main():
                 existing_gpt = existing_row[4] if len(existing_row) > 4 else ''
                 existing_status = existing_row[9] if len(existing_row) > 9 else ''
 
-                category = extract_category(error_pattern)
+                category = extract_category(error_pattern, category_rules)
                 updated_row = [
                     category,
                     error_pattern,
