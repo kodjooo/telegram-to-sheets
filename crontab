@@ -5,15 +5,15 @@ PATH=/usr/local/bin:/usr/bin:/bin
 */30 * * * * cd /app && /usr/local/bin/python telegram_to_sheets.py >> /app/logs/telegram_to_sheets.log 2>&1
 
 # Загрузка кода из Bitbucket каждый день в 6:00
-0 6 * * * cd /app && echo "---- $(date '+%Y-%m-%d %H:%M:%S') fetch_code_from_bitbucket.py ----" >> /app/logs/fetch_code_cron.log && /usr/local/bin/python fetch_code_from_bitbucket.py >> /app/logs/fetch_code_cron.log 2>&1
+0 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') fetch_code_from_bitbucket.py ----" >> /app/logs/fetch_code_cron.log && /usr/local/bin/python fetch_code_from_bitbucket.py >> /app/logs/fetch_code_cron.log 2>&1
 
 # Обработка необработанных ошибок через GPT каждый день в 6:10  
-10 6 * * * cd /app && echo "---- $(date '+%Y-%m-%d %H:%M:%S') process_unhandled_errors.py ----" >> /app/logs/gpt_process.log && /usr/local/bin/python process_unhandled_errors.py >> /app/logs/gpt_process.log 2>&1
+10 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') process_unhandled_errors.py ----" >> /app/logs/gpt_process.log && /usr/local/bin/python process_unhandled_errors.py >> /app/logs/gpt_process.log 2>&1
 
 # Отправка ежедневного отчета каждый день в 6:19
-19 6 * * * cd /app && echo "---- $(date '+%Y-%m-%d %H:%M:%S') unknown_transaction.py ----" >> /app/logs/unknown_tx.log && /usr/local/bin/python unknown_transaction.py >> /app/logs/unknown_tx.log 2>&1
+19 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') unknown_transaction.py ----" >> /app/logs/unknown_tx.log && /usr/local/bin/python unknown_transaction.py >> /app/logs/unknown_tx.log 2>&1
 
 # Отправка ежедневного отчета каждый день в 6:20
-20 6 * * * cd /app && echo "---- $(date '+%Y-%m-%d %H:%M:%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
+20 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
 
 # Пустая строка в конце файла (обязательна для cron)
