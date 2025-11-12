@@ -19,9 +19,5 @@ touch /app/logs/daily_summary.log
 echo "Приложение Telegram-to-Sheets запущено!"
 echo "Логи будут записываться в /app/logs/"
 
-# Показать текущие cron задания
-echo "Активные cron задания:"
-crontab -l
-
 # Бесконечное ожидание чтобы контейнер продолжал работать
 tail -f /app/logs/telegram_to_sheets.log
