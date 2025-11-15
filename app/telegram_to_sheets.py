@@ -8,6 +8,7 @@ import re
 import random
 import functools
 import sqlite3
+import shutil
 
 import gspread
 from googleapiclient.errors import HttpError
@@ -24,6 +25,7 @@ LOG_PATH = os.path.join(BASE_DIR, 'logs/telegram_to_sheets.log')
 LAST_ID_FILE = os.path.join(BASE_DIR, 'last_message_id.txt')
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 CREDENTIALS_FILE = os.path.join(BASE_DIR, 'google-credentials.json')
+TMP_DIR = '/tmp'
 
 # Логирование
 logging.basicConfig(
@@ -105,6 +107,34 @@ SPECIAL_PATTERNS = [
 
 CATEGORY_SHEET_TITLE = 'Categories'
 CATEGORY_HEADER = ["Категория", "Триггер"]
+
+def prepare_session_paths(raw_session_name: str) -> tuple[str, str, str]:
+    """
+    Возвращает путь к файлу сессии на хосте, имя временной сессии в контейнере
+    и полный путь к временному .session файлу.
+    """
+    session_name = (raw_session_name or 'session').strip() or 'session'
+    has_extension = session_name.endswith('.session')
+    session_file = session_name if has_extension else f"{session_name}.session"
+    if not os.path.isabs(session_file):
+        host_path = os.path.join(BASE_DIR, session_file)
+    else:
+        host_path = session_file
+
+    stem = os.path.splitext(os.path.basename(session_file))[0]
+    tmp_session_name = os.path.join(TMP_DIR, stem)
+    tmp_session_file = f"{tmp_session_name}.session"
+    return host_path, tmp_session_name, tmp_session_file
+
+
+async def update_range(spreadsheet, range_name: str, values: list[list[str]]):
+    """Обновление диапазона через Google Sheets API без deprecated предупреждений gspread."""
+    await retry_gspread(
+        spreadsheet.values_update,
+        range_name,
+        params={'valueInputOption': 'RAW'},
+        body={'values': values}
+    )
 
 def should_normalize(text: str) -> bool:
     return any(pattern in text for pattern in SPECIAL_PATTERNS)
@@ -280,11 +310,11 @@ async def load_category_rules(spreadsheet):
             rows='200',
             cols='2'
         )
-        await retry_gspread(sheet.update, values=[CATEGORY_HEADER], range_name='A1:B1')
+        await update_range(spreadsheet, f"{CATEGORY_SHEET_TITLE}!A1:B1", [CATEGORY_HEADER])
 
     rows = await retry_gspread(sheet.get_all_values)
     if not rows:
-        await retry_gspread(sheet.update, values=[CATEGORY_HEADER], range_name='A1:B1')
+        await update_range(spreadsheet, f"{CATEGORY_SHEET_TITLE}!A1:B1", [CATEGORY_HEADER])
         rows = [CATEGORY_HEADER]
 
     rules = defaultdict(list)
@@ -331,15 +361,29 @@ def count_and_aggregate(logs):
 async def main():
     config = {}
     client = None
+    session_host_path = None
+    tmp_session_file = None
     try:
         os.chdir(BASE_DIR)
         clean_old_logs(LOG_PATH, days=7)
         with open(CONFIG_PATH, 'r') as f:
             config = json.load(f)
-        client = TelegramClient(config['session_name'], config['api_id'], config['api_hash'])
+        session_host_path, tmp_session_name, tmp_session_file = prepare_session_paths(config.get('session_name', 'session'))
+        if not os.path.exists(session_host_path):
+            logging.error(
+                "Файл Telegram-сессии %s не найден. "
+                "Запустите `docker exec telegram-to-sheets-app python -m telethon.sessions` для авторизации.",
+                session_host_path
+            )
+            return
+
+        os.makedirs(os.path.dirname(tmp_session_file), exist_ok=True)
+        shutil.copy2(session_host_path, tmp_session_file)
+
+        client = TelegramClient(tmp_session_name, config['api_id'], config['api_hash'])
         for i in range(5):
             try:
-                await client.start()
+                await client.connect()
                 break
             except sqlite3.OperationalError as e:
                 if 'database is locked' in str(e):
@@ -347,6 +391,16 @@ async def main():
                     await asyncio.sleep(3)
                 else:
                     raise
+        else:
+            logging.error("Не удалось подключиться к Telegram после 5 попыток.")
+            return
+
+        if not await client.is_user_authorized():
+            logging.error(
+                "Telegram-сессия найдена, но не авторизована. "
+                "Запустите `docker exec telegram-to-sheets-app python -m telethon.sessions` и авторизуйтесь вручную."
+            )
+            return
         last_id = read_last_id()
         logging.info(f"Последний обработанный ID: {last_id}")
         messages = await client.get_messages(int(config['chat_id']), limit=500, min_id=last_id)
@@ -401,13 +455,13 @@ async def main():
         # Гарантированно добавим заголовки, если пусто
         group_values = await retry_gspread(sheet_groups.get_all_values)
         if not group_values or not any(cell.strip() for cell in group_values[0]):
-            await retry_gspread(
-                sheet_groups.update,
-                values=[[
+            await update_range(
+                spreadsheet,
+                'Groups!A1:J1',
+                [[
                     "Категория", "Ошибка (шаблон)", "Адреса", "Код из Bitbucket", "GPT-ответ",
                     "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление", "Статус"
-                ]],
-                range_name='A1:J1'
+                ]]
             )
 
         category_rules = await load_category_rules(spreadsheet)
@@ -637,6 +691,11 @@ async def main():
 
         if client is not None:
             await client.disconnect()
+        if tmp_session_file and session_host_path and os.path.exists(tmp_session_file):
+            try:
+                shutil.copy2(tmp_session_file, session_host_path)
+            except Exception as copy_err:
+                logging.error(f"Не удалось сохранить Telegram-сессию: {copy_err}")
         logging.info("Скрипт успешно завершил работу.")
 
 if __name__ == '__main__':

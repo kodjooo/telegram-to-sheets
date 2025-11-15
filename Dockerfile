@@ -5,6 +5,7 @@ FROM python:3.11-slim
 RUN apt-get update && apt-get install -y \
     cron \
     tzdata \
+    python-is-python3 \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка рабочей директории

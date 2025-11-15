@@ -11,7 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # Настройка логирования
 logging.basicConfig(
     filename='/app/logs/unknown_tx.log',
-    level=logging.DEBUG,
+    level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
 )
 
