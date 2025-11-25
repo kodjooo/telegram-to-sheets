@@ -231,6 +231,12 @@ def extract_error_and_address(text):
 TRANSIENT_HTTP_STATUSES = {408, 409, 429, 500, 502, 503, 504}
 
 
+def _calc_sleep(current_delay, status=None, base_jitter=2, min_quota_wait=120):
+    if status == 429:
+        return min_quota_wait
+    return current_delay + random.uniform(0, base_jitter)
+
+
 async def retry_gspread(func, *args, retries=5, delay=3, backoff=2, **kwargs):
     current_delay = delay
     for attempt in range(retries):
@@ -259,19 +265,19 @@ async def retry_gspread(func, *args, retries=5, delay=3, backoff=2, **kwargs):
             if not is_transient or attempt == retries - 1:
                 raise
             logging.warning("gspread transient error (%s) on attempt %s/%s: %s", status, attempt + 1, retries, e)
-            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            await asyncio.sleep(_calc_sleep(current_delay, status=status))
             current_delay *= backoff
         except (GoogleTransportError, requests_exceptions.RequestException, OSError) as e:
             if attempt == retries - 1:
                 raise
             logging.warning("Network error on attempt %s/%s for %s: %s", attempt + 1, retries, func.__name__, e)
-            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            await asyncio.sleep(_calc_sleep(current_delay))
             current_delay *= backoff
         except Exception as e:
             if attempt == retries - 1:
                 raise
             logging.warning("Unexpected error on attempt %s/%s for %s: %s", attempt + 1, retries, func.__name__, e)
-            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            await asyncio.sleep(_calc_sleep(current_delay))
             current_delay *= backoff
 
 
@@ -284,19 +290,19 @@ async def retry_google_api(api_call, retries=5, delay=3, backoff=2):
             if e.resp.status not in TRANSIENT_HTTP_STATUSES or attempt == retries - 1:
                 raise
             logging.warning("Google API transient HttpError %s on attempt %s/%s", e.resp.status, attempt + 1, retries)
-            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            await asyncio.sleep(_calc_sleep(current_delay, status=e.resp.status))
             current_delay *= backoff
         except (GoogleTransportError, requests_exceptions.RequestException, OSError) as e:
             if attempt == retries - 1:
                 raise
             logging.warning("Google API network error on attempt %s/%s: %s", attempt + 1, retries, e)
-            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            await asyncio.sleep(_calc_sleep(current_delay))
             current_delay *= backoff
         except Exception as e:
             if attempt == retries - 1:
                 raise
             logging.warning("Unexpected Google API error on attempt %s/%s: %s", attempt + 1, retries, e)
-            await asyncio.sleep(current_delay + random.uniform(0, 2))
+            await asyncio.sleep(_calc_sleep(current_delay))
             current_delay *= backoff
 
 
