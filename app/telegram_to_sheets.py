@@ -19,6 +19,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 from requests import exceptions as requests_exceptions
 from telethon import TelegramClient
 
+from telegram_proxy import get_telegram_proxy
+
 # Константы
 BASE_DIR = '/app'
 LOG_PATH = os.path.join(BASE_DIR, 'logs/telegram_to_sheets.log')
@@ -386,7 +388,16 @@ async def main():
         os.makedirs(os.path.dirname(tmp_session_file), exist_ok=True)
         shutil.copy2(session_host_path, tmp_session_file)
 
-        client = TelegramClient(tmp_session_name, config['api_id'], config['api_hash'])
+        telegram_proxy = get_telegram_proxy(config)
+        if telegram_proxy:
+            logging.info("Telegram proxy enabled: %s:%s", telegram_proxy[1], telegram_proxy[2])
+
+        client = TelegramClient(
+            tmp_session_name,
+            config['api_id'],
+            config['api_hash'],
+            proxy=telegram_proxy,
+        )
         for i in range(5):
             try:
                 await client.connect()
@@ -564,20 +575,6 @@ async def main():
 
         # ВСЕГДА получаем свежие данные после добавления заголовков
         group_rows_all = await retry_gspread(sheet_groups.get_all_values)
-
-        # Удаление строк, у которых за 30 дней = 0
-        rows_to_delete = []
-        for idx, row in enumerate(group_rows_all[1:], start=2):  # начиная со 2 строки
-            try:
-                count_30d = int(row[7]) if len(row) > 7 and row[7].strip().isdigit() else 0
-                if count_30d == 0:
-                    rows_to_delete.append(idx)
-            except Exception:
-                continue
-
-        # Удаляем строки в обратном порядке, чтобы индексы не сдвигались
-        for idx in reversed(rows_to_delete):
-            await retry_gspread(sheet_groups.delete_rows, idx)
 
         header = group_rows_all[0]
         existing_groups = {}  # error_pattern -> (row_idx, row_data)

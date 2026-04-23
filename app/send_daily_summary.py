@@ -7,6 +7,8 @@ from telethon import TelegramClient
 import asyncio
 from datetime import datetime
 
+from telegram_proxy import get_telegram_proxy
+
 # Пути
 BASE_DIR = '/app'
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
@@ -65,7 +67,13 @@ else:
 # Отправка в Telegram
 async def send_message():
     session_file = os.path.join(BASE_DIR, config['session_name'])
-    client = TelegramClient(session_file, config['api_id'], config['api_hash'])
+    telegram_proxy = get_telegram_proxy(config)
+    client = TelegramClient(
+        session_file,
+        config['api_id'],
+        config['api_hash'],
+        proxy=telegram_proxy,
+    )
     await client.start()
     await client.send_message(
         config['report_channel_id'],
