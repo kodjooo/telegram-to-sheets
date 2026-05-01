@@ -28,6 +28,8 @@ LAST_ID_FILE = os.path.join(BASE_DIR, 'last_message_id.txt')
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 CREDENTIALS_FILE = os.path.join(BASE_DIR, 'google-credentials.json')
 TMP_DIR = '/tmp'
+TELEGRAM_CONNECT_RETRIES = 6
+TELEGRAM_RETRY_DELAYS_SEC = [30, 90, 180]
 
 # Логирование
 logging.basicConfig(
@@ -398,19 +400,40 @@ async def main():
             config['api_hash'],
             proxy=telegram_proxy,
         )
-        for i in range(5):
+        last_connect_error = None
+        for attempt in range(1, TELEGRAM_CONNECT_RETRIES + 1):
             try:
-                await client.connect()
-                break
-            except sqlite3.OperationalError as e:
-                if 'database is locked' in str(e):
-                    logging.warning("SQLite база заблокирована, пробуем снова через 3 секунды...")
-                    await asyncio.sleep(3)
+                for i in range(5):
+                    try:
+                        await client.connect()
+                        last_connect_error = None
+                        break
+                    except sqlite3.OperationalError as e:
+                        if 'database is locked' in str(e):
+                            logging.warning("SQLite база заблокирована, пробуем снова через 3 секунды...")
+                            await asyncio.sleep(3)
+                        else:
+                            raise
                 else:
-                    raise
-        else:
-            logging.error("Не удалось подключиться к Telegram после 5 попыток.")
-            return
+                    raise RuntimeError("Не удалось подключиться к Telegram из-за блокировки SQLite.")
+                break
+            except Exception as e:
+                last_connect_error = e
+                if attempt == TELEGRAM_CONNECT_RETRIES:
+                    break
+                delay = TELEGRAM_RETRY_DELAYS_SEC[min(attempt - 1, len(TELEGRAM_RETRY_DELAYS_SEC) - 1)] + random.uniform(0, 15)
+                logging.warning(
+                    "Не удалось подключиться к Telegram, попытка %s/%s: %s. Повтор через %.1f сек.",
+                    attempt,
+                    TELEGRAM_CONNECT_RETRIES,
+                    e,
+                    delay
+                )
+                await asyncio.sleep(delay)
+
+        if last_connect_error is not None:
+            logging.error("Не удалось подключиться к Telegram после %s попыток.", TELEGRAM_CONNECT_RETRIES)
+            raise last_connect_error
 
         if not await client.is_user_authorized():
             logging.error(

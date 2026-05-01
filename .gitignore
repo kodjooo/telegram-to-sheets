@@ -2,7 +2,9 @@
 app/config.json
 app/google-credentials.json
 app/session.session
+app/*.session
 session.session
+session*.session
 
 # Логи
 logs/
@@ -10,6 +12,9 @@ logs/
 
 # Файлы состояния
 app/last_message_id.txt
+app/last_message_id*.txt
+app/daily_summary.lock
+app/daily_summary_state.json
 
 # Логи разработки
 app/logs/dev.log

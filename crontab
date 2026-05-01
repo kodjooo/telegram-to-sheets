@@ -13,7 +13,8 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Отправка ежедневного отчета каждый день в 6:19
 19 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') unknown_transaction.py ----" >> /app/logs/unknown_tx.log && /usr/local/bin/python3 unknown_transaction.py >> /app/logs/unknown_tx.log 2>&1
 
-# Отправка ежедневного отчета каждый день в 6:20
-20 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
+# Отправка ежедневного отчета каждый день с несколькими окнами повтора
+20,35,50 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
+10,30,50 7 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
 
 # Пустая строка в конце файла (обязательна для cron)
