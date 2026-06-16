@@ -58,3 +58,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+
+# Приватные инструкции для AI-агента (не пушим)
+docs/delegation_instructions.md
+.cursor/
