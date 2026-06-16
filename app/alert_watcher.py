@@ -158,7 +158,12 @@ def build_alert_text(pending):
         if cat not in categories:
             categories.append(cat)
     shown = categories[:MAX_LINES_PER_MESSAGE]
-    lines = ["Появились критичные логи:", ""]
+    lines = [
+        "🤖 Сообщение от бота мониторинга логов",
+        "",
+        "🚨 Появились критичные логи:",
+        "",
+    ]
     lines.extend(shown)
     if len(categories) > len(shown):
         lines.append("")
