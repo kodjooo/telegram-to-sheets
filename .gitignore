@@ -15,6 +15,8 @@ app/last_message_id.txt
 app/last_message_id*.txt
 app/daily_summary.lock
 app/daily_summary_state.json
+app/alert_last_id.txt
+app/alert_state.json
 
 # Логи разработки
 app/logs/dev.log

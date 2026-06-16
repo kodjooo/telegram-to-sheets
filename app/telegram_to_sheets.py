@@ -110,7 +110,8 @@ SPECIAL_PATTERNS = [
 ]
 
 CATEGORY_SHEET_TITLE = 'Categories'
-CATEGORY_HEADER = ["Категория", "Триггер"]
+# Третий столбец "Алерт" читается отдельным alert_watcher.py для срочных уведомлений.
+CATEGORY_HEADER = ["Категория", "Триггер", "Алерт"]
 
 def prepare_session_paths(raw_session_name: str) -> tuple[str, str, str]:
     """
