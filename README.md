@@ -54,6 +54,12 @@ docker-compose logs -f
    - Группирует по платформам (Wildberries/Ozon)
    - Создает отдельный лист "Unknown tx" в таблице
 
+6. **alert_watcher.py** — срочные уведомления по критичным логам
+   - Запускается каждые 2 минуты независимо от основного пайплайна
+   - Сверяет новые сообщения с критичными триггерами из листа "Categories" (непустая колонка "Алерт")
+   - Шлёт сводное уведомление со списком категорий в `alert_chat_id`, но не чаще одного раза в 30 минут (накопленное за окно уходит одним сообщением)
+   - В Google Sheets не пишет; сессию Telegram использует в режиме только чтение
+
 ## Требования
 
 ### API ключи и доступы:
@@ -75,9 +81,24 @@ docker-compose logs -f
   "bitbucket_repo": "owner/repo_name",
   "bitbucket_branch": "production",
   "openai_api_key": "sk-...",
-  "report_channel_id": "id_канала_для_отчетов"
+  "report_channel_id": "id_канала_для_отчетов",
+  "alert_chat_id": "id_группы_для_срочных_уведомлений"
 }
 ```
+
+> **`alert_chat_id`** — группа/канал, куда `alert_watcher.py` шлёт срочные уведомления. Аккаунт сессии Telegram должен состоять в этой группе. Если ключ не задан — срочные уведомления отключены.
+
+### Вкладка «Categories» (правила категоризации)
+
+Лист `Categories` заполняется вручную, три колонки:
+
+| Категория | Триггер | Алерт |
+| --- | --- | --- |
+| Дисковое пространство | disk space is critically low | 1 |
+| Платежи | recurrent payment failed | |
+
+- **Триггер** — подстрока (регистр не важен), по которой лог относится к категории.
+- **Алерт** — любая непустая отметка делает триггер критичным: при появлении такого лога `alert_watcher.py` пришлёт срочное уведомление в `alert_chat_id`. Пустая ячейка — категория используется только для группировки.
 
 ## Развертывание
 
@@ -172,6 +193,7 @@ docker-compose logs -f
 Система использует cron для автоматического выполнения задач:
 
 - **Каждые 30 минут**: Обработка новых сообщений из Telegram
+- **Каждые 2 минуты**: Проверка критичных логов и срочные уведомления (`alert_watcher.py`)
 - **06:00 ежедневно**: Загрузка контекста кода из Bitbucket  
 - **06:10 ежедневно**: Обработка ошибок через GPT
 - **06:19 ежедневно**: Анализ неизвестных транзакций
@@ -184,6 +206,7 @@ docker-compose logs -f
 | Скрипт | Cron | Лог-файл (в `./logs`) | Назначение | Ручной запуск |
 | --- | --- | --- | --- | --- |
 | `telegram_to_sheets.py` | `*/30 * * * *` | `telegram_to_sheets.log` | Забирает новые сообщения из Telegram, обновляет листы `Original data` и `Groups`, чистит устаревшие записи | `docker exec telegram-to-sheets-app python telegram_to_sheets.py` |
+| `alert_watcher.py` | `*/2 * * * *` | `alert_watcher.log` | Шлёт срочные уведомления по критичным логам в `alert_chat_id` (не чаще 1 раза в 30 мин) | `docker exec telegram-to-sheets-app python alert_watcher.py` |
 | `fetch_code_from_bitbucket.py` | `0 6 * * *` | `fetch_code_cron.log` | Находит адреса ошибок и подтягивает фрагменты кода из Bitbucket | `docker exec telegram-to-sheets-app python fetch_code_from_bitbucket.py` |
 | `process_unhandled_errors.py` | `10 6 * * *` | `gpt_process.log` | Отправляет необработанные ошибки и контекст в GPT, записывает ответ и меняет статус | `docker exec telegram-to-sheets-app python process_unhandled_errors.py` |
 | `unknown_transaction.py` | `19 6 * * *` | `unknown_tx.log` | Формирует лист `Unknown tx` по логам «Unknown transaction type» | `docker exec telegram-to-sheets-app python unknown_transaction.py` |
