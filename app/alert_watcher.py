@@ -1,7 +1,7 @@
 """
 Срочные уведомления по критичным логам.
 
-Запускается часто (каждые 1-2 минуты) и работает независимо от telegram_to_sheets.py:
+Запускается каждые 5 минут и работает независимо от telegram_to_sheets.py:
   1. Читает новые сообщения Telegram с момента собственного курсора (alert_last_id.txt).
   2. Сверяет их с критичными триггерами из вкладки Categories (непустой столбец "Алерт").
   3. Совпадения копит в alert_state.json.
@@ -9,8 +9,10 @@
      сколько бы логов ни падало. Накопленное за период уходит одним сообщением.
 
 Курсор продвигается каждый запуск, поэтому одно событие учитывается один раз.
-Сессию используем в режиме только-чтение: копируем в свой /tmp-файл и НЕ копируем обратно,
-чтобы не конфликтовать с telegram_to_sheets.py, который сессию персистит.
+
+Защита от перегрузки Telegram/прокси (иначе мешает сбору telegram_to_sheets.py):
+  • flock-lock (alert_watcher.lock) не даёт прогонам накладываться друг на друга;
+  • своя tmp-копия сессии на каждый процесс (по PID), обратно не копируется.
 """
 
 import os
@@ -20,6 +22,7 @@ import logging
 import shutil
 import sqlite3
 import random
+import fcntl
 from datetime import datetime, timedelta
 
 import gspread
@@ -36,6 +39,7 @@ CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
 CREDENTIALS_FILE = os.path.join(BASE_DIR, 'google-credentials.json')
 ALERT_LAST_ID_FILE = os.path.join(BASE_DIR, 'alert_last_id.txt')
 ALERT_STATE_FILE = os.path.join(BASE_DIR, 'alert_state.json')
+LOCK_PATH = os.path.join(BASE_DIR, 'alert_watcher.lock')
 TMP_DIR = '/tmp'
 
 # Не чаще одного уведомления в этот интервал, сколько бы логов ни падало.
@@ -198,14 +202,17 @@ async def main():
         session_host_path, tmp_session_name, tmp_session_file = prepare_session_paths(
             config.get('session_name', 'session')
         )
-        # Отдельный tmp-файл, чтобы не пересекаться с telegram_to_sheets.py.
+        # Отдельный tmp-файл, уникальный для процесса, чтобы не пересекаться ни с
+        # telegram_to_sheets.py, ни с другим прогоном alert_watcher (telethon на
+        # disconnect пишет состояние в сессию — общий файл давал "readonly database").
         stem = os.path.splitext(os.path.basename(tmp_session_file))[0]
-        tmp_session_name = os.path.join(TMP_DIR, f"alert_{stem}")
+        tmp_session_name = os.path.join(TMP_DIR, f"alert_{stem}_{os.getpid()}")
         tmp_session_file = f"{tmp_session_name}.session"
         if not os.path.exists(session_host_path):
             logging.error("Файл Telegram-сессии %s не найден.", session_host_path)
             return
         shutil.copy2(session_host_path, tmp_session_file)
+        os.chmod(tmp_session_file, 0o644)  # своя копия должна быть записываемой
 
         client = TelegramClient(
             tmp_session_name,
@@ -292,4 +299,16 @@ async def main():
 
 
 if __name__ == '__main__':
-    asyncio.run(main())
+    # Защита от наложения: если предыдущий прогон ещё работает — сразу выходим,
+    # чтобы не плодить параллельные подключения с одного Telegram-аккаунта.
+    lock_file = open(LOCK_PATH, 'w')
+    try:
+        fcntl.flock(lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        logging.info("Предыдущий прогон alert_watcher ещё работает — пропускаем запуск.")
+        raise SystemExit(0)
+    try:
+        asyncio.run(main())
+    finally:
+        fcntl.flock(lock_file, fcntl.LOCK_UN)
+        lock_file.close()

@@ -17,6 +17,7 @@ app/daily_summary.lock
 app/daily_summary_state.json
 app/alert_last_id.txt
 app/alert_state.json
+app/alert_watcher.lock
 
 # Логи разработки
 app/logs/dev.log

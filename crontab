@@ -4,8 +4,8 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Обработка сообщений Telegram каждые 30 минут
 */30 * * * * cd /app && /usr/local/bin/python3 telegram_to_sheets.py >> /app/logs/telegram_to_sheets.log 2>&1
 
-# Срочные уведомления по критичным логам каждые 2 минуты (троттлинг отправки — раз в 30 мин внутри скрипта)
-*/2 * * * * cd /app && /usr/local/bin/python3 alert_watcher.py >> /app/logs/alert_watcher.log 2>&1
+# Срочные уведомления по критичным логам каждые 5 минут (flock не даёт прогонам накладываться; троттлинг отправки — раз в 30 мин внутри скрипта)
+*/5 * * * * cd /app && /usr/local/bin/python3 alert_watcher.py >> /app/logs/alert_watcher.log 2>&1
 
 # Загрузка кода из Bitbucket каждый день в 6:00
 0 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') fetch_code_from_bitbucket.py ----" >> /app/logs/fetch_code_cron.log && /usr/local/bin/python3 fetch_code_from_bitbucket.py >> /app/logs/fetch_code_cron.log 2>&1
