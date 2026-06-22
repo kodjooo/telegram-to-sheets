@@ -82,11 +82,14 @@ docker-compose logs -f
   "bitbucket_branch": "production",
   "openai_api_key": "sk-...",
   "report_channel_id": "id_канала_для_отчетов",
-  "alert_chat_id": "id_группы_для_срочных_уведомлений"
+  "alert_chat_id": "id_группы_для_срочных_уведомлений",
+  "telegram_proxy": "socks5://127.0.0.1:8080"
 }
 ```
 
 > **`alert_chat_id`** — группа/канал, куда `alert_watcher.py` шлёт срочные уведомления. Аккаунт сессии Telegram должен состоять в этой группе. Если ключ не задан — срочные уведомления отключены.
+>
+> ⚠️ **`telegram_proxy`** — если для доступа к Telegram нужен прокси, задавайте его **именно в `config.json`**, а не только через env-переменную `TELEGRAM_PROXY`. Скрипты запускаются по cron, а **cron не видит env-переменные контейнера** — без прокси в config задачи пойдут к Telegram напрямую и упадут по таймауту (при этом ручные запуски через `docker exec` будут работать, маскируя проблему). Форматы: `socks5://host:port`, `host:port@user:pass` и т.п. (см. `app/telegram_proxy.py`).
 
 ### Вкладка «Categories» (правила категоризации)
 
