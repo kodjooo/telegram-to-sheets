@@ -104,12 +104,22 @@ def build_message(config):
     return "\n".join(message_lines)
 
 
-async def connect_with_retries(client):
+async def connect_with_retries(session_file, api_id, api_hash, proxy):
+    """Подключается, пересоздавая клиента на каждой попытке: при сбое прокси-пул
+    отдаёт другой upstream, иначе ретраи залипают на одном мёртвом прокси.
+    Возвращает подключённого клиента."""
     last_error = None
+    client = None
     for attempt in range(1, CONNECT_RETRIES + 1):
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        client = TelegramClient(session_file, api_id, api_hash, proxy=proxy)
         try:
             await client.connect()
-            return
+            return client
         except Exception as exc:
             last_error = exc
             if attempt == CONNECT_RETRIES:
@@ -171,20 +181,17 @@ async def send_daily_summary():
         message = build_message(config)
         session_file = os.path.join(BASE_DIR, config["session_name"])
         telegram_proxy = get_telegram_proxy(config)
-        client = TelegramClient(
-            session_file,
-            config["api_id"],
-            config["api_hash"],
-            proxy=telegram_proxy,
-        )
+        client = None
 
         try:
-            await connect_with_retries(client)
+            client = await connect_with_retries(
+                session_file, config["api_id"], config["api_hash"], telegram_proxy
+            )
             if not await client.is_user_authorized():
                 raise RuntimeError("Telegram session is not authorized")
             await send_with_retries(client, config["report_channel_id"], message)
         finally:
-            if client.is_connected():
+            if client is not None and client.is_connected():
                 await client.disconnect()
 
         state["last_sent_date"] = today

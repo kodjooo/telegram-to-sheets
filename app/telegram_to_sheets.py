@@ -395,14 +395,22 @@ async def main():
         if telegram_proxy:
             logging.info("Telegram proxy enabled: %s:%s", telegram_proxy[1], telegram_proxy[2])
 
-        client = TelegramClient(
-            tmp_session_name,
-            config['api_id'],
-            config['api_hash'],
-            proxy=telegram_proxy,
-        )
         last_connect_error = None
         for attempt in range(1, TELEGRAM_CONNECT_RETRIES + 1):
+            # Пересоздаём клиента на каждой попытке: при сбое прокси-пул отдаёт
+            # другой upstream-прокси. Иначе ретраи залипают на одном мёртвом прокси
+            # (одиночные коннекты проходят, а застрявший клиент таймаутит весь прогон).
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            client = TelegramClient(
+                tmp_session_name,
+                config['api_id'],
+                config['api_hash'],
+                proxy=telegram_proxy,
+            )
             try:
                 for i in range(5):
                     try:

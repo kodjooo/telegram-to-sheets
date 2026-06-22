@@ -214,15 +214,22 @@ async def main():
         shutil.copy2(session_host_path, tmp_session_file)
         os.chmod(tmp_session_file, 0o644)  # своя копия должна быть записываемой
 
-        client = TelegramClient(
-            tmp_session_name,
-            config['api_id'],
-            config['api_hash'],
-            proxy=get_telegram_proxy(config),
-        )
-
+        telegram_proxy = get_telegram_proxy(config)
         last_connect_error = None
         for attempt in range(1, TELEGRAM_CONNECT_RETRIES + 1):
+            # Свежий клиент на каждой попытке → другой upstream из прокси-пула,
+            # иначе ретраи залипают на одном мёртвом прокси.
+            if client is not None:
+                try:
+                    await client.disconnect()
+                except Exception:
+                    pass
+            client = TelegramClient(
+                tmp_session_name,
+                config['api_id'],
+                config['api_hash'],
+                proxy=telegram_proxy,
+            )
             try:
                 for _ in range(5):
                     try:
