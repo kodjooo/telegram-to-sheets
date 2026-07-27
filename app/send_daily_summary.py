@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import random
+import re
 from collections import defaultdict
 from datetime import datetime, timedelta
 
@@ -55,14 +56,39 @@ def save_state(state):
     os.replace(tmp_path, STATE_PATH)
 
 
-MAX_RED_LINES = 10
-MAX_YELLOW_LINES = 10
+MAX_RED_LINES = 8
+MAX_YELLOW_LINES = 8
 MAX_UNRATED_LINES = 5
+TELEGRAM_LIMIT = 4000  # запас от лимита 4096, чтобы ссылка в конце всегда была цела
+
+_NOISE_RE = re.compile(r'^production\.(ERROR|WARNING|INFO):\s*')
 
 
 def _short(text, limit):
     text = text.strip()
     return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _clean_pattern(pattern, limit=80):
+    """Убирает технический шум из шаблона для показа человеку."""
+    p = _NOISE_RE.sub('', pattern).strip()
+    p = re.sub(r'\s*\[[A-Z][\w\\, \[\]]{15,}…?\]?$', '', p)  # хвост [Illuminate\... ]
+    p = re.sub(r'\s*\{"?exception"?:.*$', '', p)   # JSON-огрызок {"exception":...
+    p = re.sub(r'\s*\{\}\s*\[\]\s*$', '', p)       # хвост {}[]
+    return _short(p, limit)
+
+
+def _first_sentences(text, limit):
+    """Обрезка по границе предложения, а не на полуслове."""
+    text = text.strip()
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    for sep in ('. ', '; ', ' — '):
+        pos = cut.rfind(sep)
+        if pos > limit // 2:
+            return cut[:pos + 1].rstrip()
+    return cut.rsplit(' ', 1)[0] + '…'
 
 
 def build_message(config):
@@ -125,7 +151,7 @@ def build_message(config):
         # строку с суммарным счётчиком.
         collapsed = {}
         for e in act:
-            key = e["action"][:120] or e["pattern"]
+            key = e["action"].strip().lower()[:80] or e["pattern"]
             if key in collapsed:
                 collapsed[key]["count"] += e["count"]
                 collapsed[key]["groups"] += 1
@@ -137,9 +163,9 @@ def build_message(config):
         for e in act[:MAX_RED_LINES]:
             urgency = f" [{e['urgency']}]" if e["urgency"] else ""
             multi = f" (в {e['groups']} группах)" if e.get("groups", 1) > 1 else ""
-            lines.append(f"• {_short(e['pattern'], 90)} — {e['count']}/сутки{multi}{urgency}")
+            lines.append(f"• {_clean_pattern(e['pattern'])} — {e['count']}/сутки{multi}{urgency}")
             if e["action"]:
-                lines.append(f"  ↳ {_short(e['action'], 180)}")
+                lines.append(f"  ↳ {_first_sentences(e['action'], 170)}")
         if len(act) > MAX_RED_LINES:
             lines.append(f"  …и ещё {len(act) - MAX_RED_LINES} (см. таблицу)")
         lines.append("")
@@ -149,7 +175,7 @@ def build_message(config):
         watch_logs = sum(e["count"] for e in watch)
         lines.append(f"🟡 Понаблюдать ({len(watch)} групп, {watch_logs} логов):")
         for e in watch[:MAX_YELLOW_LINES]:
-            lines.append(f"• {_short(e['pattern'], 90)} — {e['count']}/сутки")
+            lines.append(f"• {_clean_pattern(e['pattern'])} — {e['count']}/сутки")
         if len(watch) > MAX_YELLOW_LINES:
             lines.append(f"  …и ещё {len(watch) - MAX_YELLOW_LINES}")
         lines.append("")
@@ -159,7 +185,7 @@ def build_message(config):
         unrated_logs = sum(e["count"] for e in unrated)
         lines.append(f"⚠️ Не оценено триажем ({len(unrated)} групп, {unrated_logs} логов):")
         for e in unrated[:MAX_UNRATED_LINES]:
-            lines.append(f"• {_short(e['pattern'], 90)} — {e['count']}/сутки")
+            lines.append(f"• {_clean_pattern(e['pattern'])} — {e['count']}/сутки")
         if len(unrated) > MAX_UNRATED_LINES:
             lines.append(f"  …и ещё {len(unrated) - MAX_UNRATED_LINES}")
         lines.append("")
@@ -171,12 +197,20 @@ def build_message(config):
     if background_logs:
         lines.append(f"⚪ Известный фон (вердикт «игнорировать»): {background_logs} логов")
 
-    lines.append(
-        "\n👉 [Подробнее](https://docs.google.com/spreadsheets/d/1eSuLIAlnxkZHA4jy2cBZVwWiA__NZ3pl5hncxU7O3RU/edit?gid=807594473)"
-    )
-    message = "\n".join(lines)
-    # Телеграм ограничивает сообщение 4096 символами
-    return message if len(message) <= 4000 else message[:3990] + "\n…"
+    footer = "\n👉 [Подробнее](https://docs.google.com/spreadsheets/d/1eSuLIAlnxkZHA4jy2cBZVwWiA__NZ3pl5hncxU7O3RU/edit?gid=807594473)"
+
+    # Лимит Telegram: если не влезаем — убираем строки с конца ЖЁЛТОГО и
+    # «не оценено»-блоков (наименее важное), но никогда не рвём хвост и ссылку.
+    message = "\n".join(lines) + footer
+    while len(message) > TELEGRAM_LIMIT:
+        for i in range(len(lines) - 1, -1, -1):
+            if lines[i].startswith("• ") and not lines[i - 1].startswith("🔴") and "↳" not in lines[i]:
+                del lines[i]
+                break
+        else:
+            lines = lines[:-1]
+        message = "\n".join(lines) + footer
+    return message
 
 
 async def connect_with_retries(session_file, api_id, api_hash, proxy):
