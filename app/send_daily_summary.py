@@ -55,7 +55,19 @@ def save_state(state):
     os.replace(tmp_path, STATE_PATH)
 
 
+MAX_RED_LINES = 10
+MAX_YELLOW_LINES = 10
+MAX_UNRATED_LINES = 5
+
+
+def _short(text, limit):
+    text = text.strip()
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
 def build_message(config):
+    """Сводка строится из вердиктов триажа (колонки Вердикт/Срочность/Действие
+    вкладки Groups): критичное — развёрнуто, шум — одной строкой."""
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
@@ -70,38 +82,101 @@ def build_message(config):
         return "⚠️ Нет данных для формирования отчета."
 
     header = rows[0]
-    category_idx = header.index("Категория")
-    count_1d_idx = header.index("За 1 день")
+    idx = {name: header.index(name) for name in header if name}
 
-    category_counts = defaultdict(int)
-    empty_category_count = 0
+    def col(row, name):
+        i = idx.get(name)
+        return row[i].strip() if i is not None and len(row) > i else ""
+
+    act, watch, unrated = [], [], []
+    background_logs = 0
+    total = 0
 
     for row in rows[1:]:
         try:
-            count = int(row[count_1d_idx])
-        except Exception:
+            count = int(col(row, "За 1 день") or 0)
+        except ValueError:
             continue
+        total += count
+        if count == 0:
+            continue
+        verdict = col(row, "Вердикт").lower()
+        entry = {
+            "pattern": col(row, "Ошибка (шаблон)"),
+            "count": count,
+            "urgency": col(row, "Срочность"),
+            "action": col(row, "Действие"),
+        }
+        if verdict == "действовать":
+            act.append(entry)
+        elif verdict == "понаблюдать":
+            watch.append(entry)
+        elif verdict == "игнорировать":
+            background_logs += count
+        else:  # вердикта нет — не оценено
+            unrated.append(entry)
 
-        category = row[category_idx].strip() if len(row) > category_idx else ""
-        if category:
-            category_counts[category] += count
-        else:
-            empty_category_count += count
-
-    total = sum(category_counts.values()) + empty_category_count
     report_date = datetime.now() - timedelta(days=1)
-    date_str = report_date.strftime("%d.%m.%Y")
+    lines = [f"🧾 Сводка за {report_date.strftime('%d.%m.%Y')} — {total} логов за сутки", ""]
 
-    message_lines = [f"🧾 Ежедневная сводка за {date_str} ({total} всего):"]
-    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
-        message_lines.append(f"• {cat}: {count}")
-    if empty_category_count:
-        message_lines.append(f"• Без категории: {empty_category_count}")
+    if act:
+        # Один инцидент часто размазан по многим группам (разные джобы, разные
+        # SQLSTATE-коды) с одинаковым текстом «Действия» — схлопываем в одну
+        # строку с суммарным счётчиком.
+        collapsed = {}
+        for e in act:
+            key = e["action"][:120] or e["pattern"]
+            if key in collapsed:
+                collapsed[key]["count"] += e["count"]
+                collapsed[key]["groups"] += 1
+            else:
+                collapsed[key] = {**e, "groups": 1}
+        act = list(collapsed.values())
+        act.sort(key=lambda e: -e["count"])
+        lines.append(f"🔴 Действовать ({len(act)}):")
+        for e in act[:MAX_RED_LINES]:
+            urgency = f" [{e['urgency']}]" if e["urgency"] else ""
+            multi = f" (в {e['groups']} группах)" if e.get("groups", 1) > 1 else ""
+            lines.append(f"• {_short(e['pattern'], 90)} — {e['count']}/сутки{multi}{urgency}")
+            if e["action"]:
+                lines.append(f"  ↳ {_short(e['action'], 180)}")
+        if len(act) > MAX_RED_LINES:
+            lines.append(f"  …и ещё {len(act) - MAX_RED_LINES} (см. таблицу)")
+        lines.append("")
 
-    message_lines.append(
+    if watch:
+        watch.sort(key=lambda e: -e["count"])
+        watch_logs = sum(e["count"] for e in watch)
+        lines.append(f"🟡 Понаблюдать ({len(watch)} групп, {watch_logs} логов):")
+        for e in watch[:MAX_YELLOW_LINES]:
+            lines.append(f"• {_short(e['pattern'], 90)} — {e['count']}/сутки")
+        if len(watch) > MAX_YELLOW_LINES:
+            lines.append(f"  …и ещё {len(watch) - MAX_YELLOW_LINES}")
+        lines.append("")
+
+    if unrated:
+        unrated.sort(key=lambda e: -e["count"])
+        unrated_logs = sum(e["count"] for e in unrated)
+        lines.append(f"⚠️ Не оценено триажем ({len(unrated)} групп, {unrated_logs} логов):")
+        for e in unrated[:MAX_UNRATED_LINES]:
+            lines.append(f"• {_short(e['pattern'], 90)} — {e['count']}/сутки")
+        if len(unrated) > MAX_UNRATED_LINES:
+            lines.append(f"  …и ещё {len(unrated) - MAX_UNRATED_LINES}")
+        lines.append("")
+
+    if not act and not watch and not unrated:
+        lines.append("✅ Ничего требующего внимания: весь объём — известный фон.")
+        lines.append("")
+
+    if background_logs:
+        lines.append(f"⚪ Известный фон (вердикт «игнорировать»): {background_logs} логов")
+
+    lines.append(
         "\n👉 [Подробнее](https://docs.google.com/spreadsheets/d/1eSuLIAlnxkZHA4jy2cBZVwWiA__NZ3pl5hncxU7O3RU/edit?gid=807594473)"
     )
-    return "\n".join(message_lines)
+    message = "\n".join(lines)
+    # Телеграм ограничивает сообщение 4096 символами
+    return message if len(message) <= 4000 else message[:3990] + "\n…"
 
 
 async def connect_with_retries(session_file, api_id, api_hash, proxy):

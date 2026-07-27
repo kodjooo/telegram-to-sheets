@@ -30,7 +30,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 from telethon import TelegramClient
 
 from telegram_proxy import get_telegram_proxy
-from telegram_to_sheets import prepare_session_paths, CATEGORY_SHEET_TITLE
+from telegram_to_sheets import prepare_session_paths, clean_log, CATEGORY_SHEET_TITLE
+from normalize import is_fragment, normalize_error_pattern
 
 # ===== Константы =====
 BASE_DIR = '/app'
@@ -136,21 +137,53 @@ def load_alert_triggers():
         if trigger and is_alert and trigger not in seen:
             seen.add(trigger)
             triggers.append((trigger, category or trigger))
-    return config, triggers
+
+    # Второй источник: вердикты триажа — группы «действовать + сегодня».
+    # Совпадение проверяется по нормализованному шаблону (см. find_matches).
+    verdict_patterns = {}
+    try:
+        groups_rows = spreadsheet.worksheet('Groups').get_all_values()
+        header = groups_rows[0]
+        p_idx = header.index('Ошибка (шаблон)')
+        v_idx = header.index('Вердикт')
+        u_idx = header.index('Срочность')
+        for row in groups_rows[1:]:
+            if len(row) <= max(p_idx, v_idx, u_idx):
+                continue
+            if row[v_idx].strip().lower() == 'действовать' and row[u_idx].strip().lower() == 'сегодня':
+                pattern = row[p_idx].strip()
+                if pattern:
+                    verdict_patterns[pattern] = pattern[:80]
+    except Exception as e:
+        logging.warning("Не удалось загрузить вердикты из Groups: %s", e)
+
+    return config, triggers, verdict_patterns
 
 
-def find_matches(messages, triggers):
-    """Список совпадений {category} для сообщений, попавших под критичные триггеры."""
+def find_matches(messages, triggers, verdict_patterns=None):
+    """Список совпадений {category}: ручные триггеры из Categories (подстрока)
+    + группы с вердиктом триажа «действовать/сегодня» (по нормализованному шаблону)."""
+    verdict_patterns = verdict_patterns or {}
     matches = []
     for m in messages:
         text = (m.message or '').strip()
         if not text:
             continue
         text_lower = text.lower()
+        matched = False
         for trigger, category in triggers:
             if trigger in text_lower:
                 matches.append({'category': category})
+                matched = True
                 break
+        if matched or not verdict_patterns:
+            continue
+        if is_fragment(text):
+            continue
+        pattern = normalize_error_pattern(clean_log(text))
+        label = verdict_patterns.get(pattern)
+        if label:
+            matches.append({'category': f'🔺 {label}'})
     return matches
 
 
@@ -186,7 +219,7 @@ async def main():
         # Триггеры и конфиг тянем первыми. Если не вышло — прерываемся БЕЗ продвижения
         # курсора, чтобы следующий запуск переразобрал тот же интервал.
         try:
-            config, triggers = load_alert_triggers()
+            config, triggers, verdict_patterns = load_alert_triggers()
         except Exception as e:
             logging.error("Не удалось загрузить триггеры из Categories: %s", e)
             return
@@ -195,8 +228,8 @@ async def main():
         if not alert_chat_id:
             logging.warning("alert_chat_id не задан в config.json — уведомления отключены.")
             return
-        if not triggers:
-            logging.info("Критичных триггеров (столбец 'Алерт') нет — нечего мониторить.")
+        if not triggers and not verdict_patterns:
+            logging.info("Ни ручных триггеров, ни вердиктов «действовать/сегодня» — нечего мониторить.")
             return
 
         session_host_path, tmp_session_name, tmp_session_file = prepare_session_paths(
@@ -269,7 +302,7 @@ async def main():
 
         if new_messages:
             new_messages.sort(key=lambda m: m.id)
-            matches = find_matches(new_messages, triggers)
+            matches = find_matches(new_messages, triggers, verdict_patterns)
             if matches:
                 state['pending'].extend(matches)
                 # Защита от бесконечного роста: храним самые свежие.
