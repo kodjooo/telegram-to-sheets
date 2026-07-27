@@ -7,11 +7,13 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Срочные уведомления по критичным логам каждые 5 минут, СО СДВИГОМ со слотов :00/:30 (минуты 2,7,...,57), чтобы не стартовать одновременно со сбором (*/30). flock не даёт прогонам накладываться; троттлинг отправки — раз в 30 мин внутри скрипта
 2-59/5 * * * * cd /app && /usr/local/bin/python3 alert_watcher.py >> /app/logs/alert_watcher.log 2>&1
 
+# ОТКЛЮЧЕНО (2026-07-27): анализ перенесён на агентный триаж, см. docs/architecture.md
 # Загрузка кода из Bitbucket каждый день в 6:00
-0 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') fetch_code_from_bitbucket.py ----" >> /app/logs/fetch_code_cron.log && /usr/local/bin/python3 fetch_code_from_bitbucket.py >> /app/logs/fetch_code_cron.log 2>&1
+# 0 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') fetch_code_from_bitbucket.py ----" >> /app/logs/fetch_code_cron.log && /usr/local/bin/python3 fetch_code_from_bitbucket.py >> /app/logs/fetch_code_cron.log 2>&1
 
-# Обработка необработанных ошибок через GPT каждый день в 6:10  
-10 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') process_unhandled_errors.py ----" >> /app/logs/gpt_process.log && /usr/local/bin/python3 process_unhandled_errors.py >> /app/logs/gpt_process.log 2>&1
+# ОТКЛЮЧЕНО (2026-07-27): заменено агентным триажем
+# Обработка необработанных ошибок через GPT каждый день в 6:10
+# 10 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') process_unhandled_errors.py ----" >> /app/logs/gpt_process.log && /usr/local/bin/python3 process_unhandled_errors.py >> /app/logs/gpt_process.log 2>&1
 
 # Отправка ежедневного отчета каждый день в 6:19
 19 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') unknown_transaction.py ----" >> /app/logs/unknown_tx.log && /usr/local/bin/python3 unknown_transaction.py >> /app/logs/unknown_tx.log 2>&1

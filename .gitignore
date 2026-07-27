@@ -63,3 +63,4 @@ wheels/
 # Приватная документация для AI-агента (не пушим)
 docs/
 .cursor/
+regroup_report.md

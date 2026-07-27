@@ -81,33 +81,17 @@ def clean_log(text):
     return text
 
 
-SPECIAL_PATTERNS = [
-    "Account updating status was cleaned",
-    "Syncing for more than",
-    "Contentanalytics api key not working",
-    "Advert api key not working",
-    "Subscription turnover is higher than calculated for user",
-    "currentDate",
-    "puppet service is inactive",
-    "Load average is too high",
-    "Recurrent payment failed",
-    "SQLSTATE",
-    "ServiceTransactionReportJob failed",
-    "cURL error",
-    "Unknown transaction type",
-    "paymentFailed",
-    "DEBUG",
-    "Syncing ozon transactions for account",
-    "Ozon API response error for account",
-    "Orders integrity fail",
-    "Failed to download image",
-    "Partner not found",
-    "Account is blocked",
-    "The given data was invalid",
-    "Tinkoff payment error",
-    "Subscription changed for user",
-    "Disk space is critically low"
+# Нормализация вынесена в normalize.py: обезличиваются ВСЕ логи,
+# различительные токены (SQLSTATE-коды, классы, HTTP-статусы) сохраняются.
+from normalize import merge_fragment_chains, normalize_error_pattern  # noqa: E402
+
+GROUPS_HEADER = [
+    "Категория", "Ошибка (шаблон)",
+    "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление",
+    "Статус", "Вердикт", "Срочность", "Причина", "Действие", "Оценено",
 ]
+ARCHIVE_SHEET_TITLE = 'Archive'
+RETENTION_DAYS = 90  # группы без появлений дольше этого срока уезжают в Archive
 
 CATEGORY_SHEET_TITLE = 'Categories'
 # Третий столбец "Алерт" читается отдельным alert_watcher.py для срочных уведомлений.
@@ -140,9 +124,6 @@ async def update_range(spreadsheet, range_name: str, values: list[list[str]]):
         params={'valueInputOption': 'RAW'},
         body={'values': values}
     )
-
-def should_normalize(text: str) -> bool:
-    return any(pattern in text for pattern in SPECIAL_PATTERNS)
 
 def extract_category(error_pattern: str, category_rules: dict | None = None) -> str:
     pattern_lower = error_pattern.lower()
@@ -178,46 +159,6 @@ def class_name_to_path(class_name: str) -> str:
         return ""
     relative_path = class_name.replace("App\\", "").replace("\\", "/")
     return f"app/{relative_path}.php"
-
-def normalize_error_pattern(text: str) -> str:
-    if not text:
-        return ''
-    
-    original_text = text
-
-    if should_normalize(text):
-        # Заменяем части URL: volXXXX и partXXXXX
-        text = re.sub(r'vol\d+', 'vol<num>', text)
-        text = re.sub(r'part\d+', 'part<num>', text)
-        
-        # Можно объединить в одну строку, если хочешь:
-        # text = re.sub(r'\b[a-zA-Z]+\d+\b', '<num>', text)
-
-        # Удаляем JSON-объекты
-        text = re.sub(r'\{.*?\}', '{}', text)
-
-        # Заменяем email
-        text = re.sub(r'[\w\.-]+@[\w\.-]+', '<email>', text)
-
-        # Заменяем дату и время
-        text = re.sub(r'\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}', '<datetime>', text)
-
-        # Заменяем хеши (SHA1/SHA256 и т.п.)
-        text = re.sub(r'\b[a-f0-9]{32,64}\b', '<hash>', text)
-
-        # Заменяем дробные числа
-        text = re.sub(r'\b\d+\.\d+\b', '<float>', text)
-
-        # Заменяем большие числа
-        text = re.sub(r'\b\d{4,}\b', '<num>', text)
-
-        # Заменяем оставшиеся числа
-        text = re.sub(r'\b\d+\b', '<num>', text)
-
-        return text.strip()
-    else:
-        return original_text.strip()
-
 
 def extract_error_and_address(text):
     cleaned_text = clean_log(text)
@@ -345,17 +286,16 @@ async def load_category_rules(spreadsheet):
 def count_and_aggregate(logs):
     now = datetime.now(timezone.utc)
     error_data = defaultdict(lambda: {
-        'addresses': set(),
         'counts': {'1d': 0, '7d': 0, '30d': 0},
         'last_seen': None
     })
-    for log in logs:
-        raw_text, address = extract_error_and_address(log['text'])
+    # Склеиваем цепочки разрезанных сообщений (голова + хвосты)
+    for log in merge_fragment_chains(logs):
+        raw_text, _address = extract_error_and_address(log['text'])
         error_pattern = normalize_error_pattern(raw_text)
         if not error_pattern:
             continue
         data = error_data[error_pattern]
-        data['addresses'].add(address)
         delta = now - log['date'].replace(tzinfo=timezone.utc)
         if delta <= timedelta(days=1):
             data['counts']['1d'] += 1
@@ -504,14 +444,7 @@ async def main():
         # Гарантированно добавим заголовки, если пусто
         group_values = await retry_gspread(sheet_groups.get_all_values)
         if not group_values or not any(cell.strip() for cell in group_values[0]):
-            await update_range(
-                spreadsheet,
-                'Groups!A1:J1',
-                [[
-                    "Категория", "Ошибка (шаблон)", "Адреса", "Код из Bitbucket", "GPT-ответ",
-                    "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление", "Статус"
-                ]]
-            )
+            await update_range(spreadsheet, 'Groups!A1:L1', [GROUPS_HEADER])
 
         category_rules = await load_category_rules(spreadsheet)
 
@@ -564,166 +497,93 @@ async def main():
             except Exception as e:
                 logging.warning(f"Ошибка при разборе строки: {row} | {e}")
 
-        # Анализируем все логи
+        # Анализируем все логи (со склейкой цепочек внутри count_and_aggregate)
         error_data = count_and_aggregate(logs_data)
 
-        # Формируем таблицу групп без столбца "Кол-во уникальных адресов"
-        group_rows = [["Ошибка (шаблон)", "Адреса", "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление"]]
-        for error_pattern, data in sorted(error_data.items(), key=lambda x: x[1]['counts']['30d'], reverse=True):
-            addresses_str = ', '.join(sorted(data['addresses']))
-            last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
-            group_rows.append([
-                error_pattern,
-                addresses_str,
-                data['counts']['1d'],
-                data['counts']['7d'],
-                data['counts']['30d'],
-                last_seen_str
-            ])
-
-        # ... (всё до # Анализируем все логи без изменений)
-
-
-        # Читаем текущие строки из листа Groups
+        # Пересобираем вкладку Groups целиком:
+        # - счётчики свежих групп из error_data;
+        # - группы, не встреченные в 30-дневном окне, получают нулевые счётчики
+        #   (раньше хранили застывшие числа — это враньё в данных);
+        # - ручные колонки (Статус/Вердикт/Срочность/Причина/Действие/Оценено)
+        #   сохраняются как есть;
+        # - группы без появлений дольше RETENTION_DAYS уезжают в Archive.
         group_rows_all = await retry_gspread(sheet_groups.get_all_values)
-        # Проверяем, есть ли заголовки (первый элемент непустой)
-        if not group_rows_all or not any(group_rows_all[0]):
-            await retry_gspread(
-                sheet_groups.update,
-                values=[[
-                    "Категория",
-                    "Ошибка (шаблон)",
-                    "Адреса",
-                    "Код из Bitbucket",
-                    "GPT-ответ",
-                    "За 1 день",
-                    "За 7 дней",
-                    "За 30 дней",
-                    "Последнее появление",
-                    "Статус"
-                ]],
-                range_name='A1:J1'
-            )
-
-        # ВСЕГДА получаем свежие данные после добавления заголовков
-        group_rows_all = await retry_gspread(sheet_groups.get_all_values)
-
-        header = group_rows_all[0]
-        existing_groups = {}  # error_pattern -> (row_idx, row_data)
-        for i, row in enumerate(group_rows_all[1:], start=2):
-            if len(row) < 2:
+        existing_groups = {}  # шаблон -> сохранённые ручные колонки
+        for row in group_rows_all[1:]:
+            if len(row) < 2 or not row[1].strip():
                 continue
-            error_pattern_key = row[1].strip()
-            existing_groups[error_pattern_key] = (i, row)
+            row += [''] * (len(GROUPS_HEADER) - len(row))
+            existing_groups[row[1].strip()] = {
+                'category': row[0], 'last_seen': row[5], 'status': row[6],
+                'verdict': row[7], 'urgency': row[8],
+                'cause': row[9], 'action': row[10], 'assessed': row[11],
+            }
 
-        # Подготовка к пакетному обновлению с разбиением на пачки по 100
-        requests = []
-        new_group_rows = []
-        for error_pattern, data in sorted(error_data.items(), key=lambda x: x[1]['counts']['30d'], reverse=True):
-            addresses_str = ', '.join(sorted(data['addresses']))
-            last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
+        now_utc = datetime.now(timezone.utc)
+        retention_cutoff = (now_utc - timedelta(days=RETENTION_DAYS)).strftime('%Y-%m-%d %H:%M:%S')
 
-            category = extract_category(error_pattern, category_rules)
-            new_row = [
-                category,
-                error_pattern,
-                addresses_str,
-                '',  # Код
-                '',  # GPT
-                str(data['counts']['1d']),
-                str(data['counts']['7d']),
-                str(data['counts']['30d']),
-                last_seen_str,
-                'не обработано' if not should_normalize(error_pattern) and addresses_str.strip() else ''
+        final_rows = []
+        archive_rows = []
+        seen_patterns = set()
+
+        def build_row(pattern, counts, last_seen, saved):
+            category = (saved or {}).get('category', '').strip() or extract_category(pattern, category_rules)
+            status = (saved or {}).get('status', '').strip()
+            verdict = (saved or {}).get('verdict', '')
+            if not status:
+                status = 'не обработано' if not verdict.strip() else 'обработано'
+            s = saved or {}
+            return [
+                category, pattern,
+                str(counts['1d']), str(counts['7d']), str(counts['30d']), last_seen,
+                status, verdict, s.get('urgency', ''),
+                s.get('cause', ''), s.get('action', ''), s.get('assessed', ''),
             ]
 
-            if error_pattern in existing_groups:
-                row_idx, existing_row = existing_groups[error_pattern]
+        # Свежие группы из текущего окна
+        for error_pattern, data in sorted(error_data.items(), key=lambda x: x[1]['counts']['30d'], reverse=True):
+            last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
+            saved = existing_groups.get(error_pattern)
+            existing_last = (saved or {}).get('last_seen', '')
+            final_rows.append(build_row(
+                error_pattern, data['counts'],
+                max(last_seen_str, existing_last), saved
+            ))
+            seen_patterns.add(error_pattern)
 
-                # Сохраняем старые значения, чтобы не затирать их
-                existing_code = existing_row[3] if len(existing_row) > 3 else ''
-                existing_gpt = existing_row[4] if len(existing_row) > 4 else ''
-                existing_status = existing_row[9] if len(existing_row) > 9 else ''
-
-                category = extract_category(error_pattern, category_rules)
-                updated_row = [
-                    category,
-                    error_pattern,
-                    addresses_str,
-                    existing_code,
-                    existing_gpt,
-                    str(data['counts']['1d']),
-                    str(data['counts']['7d']),
-                    str(data['counts']['30d']),
-                    last_seen_str,
-                    existing_status if existing_status.strip() else (
-                        'не обработано' if not should_normalize(error_pattern) and addresses_str.strip() else ''
-                    )
-                ]
-
-                cell_range = f'Groups!A{row_idx}:J{row_idx}'  # <- добавили имя листа
-                requests.append({
-                    'range': cell_range,
-                    'values': [updated_row]
-                })
+        # Старые группы: счётчики в ноль; совсем протухшие — в архив
+        zero = {'1d': 0, '7d': 0, '30d': 0}
+        for pattern, saved in existing_groups.items():
+            if pattern in seen_patterns:
+                continue
+            row = build_row(pattern, zero, saved.get('last_seen', ''), saved)
+            if saved.get('last_seen', '') and saved['last_seen'] < retention_cutoff:
+                archive_rows.append(row)
             else:
-                if error_pattern not in existing_groups:
-                    new_group_rows.append(new_row)
+                final_rows.append(row)
 
-        if new_group_rows:
-            await retry_gspread(sheet_groups.append_rows, new_group_rows)
+        # Архив: дозаписываем протухшие группы (вердикты сохраняются в истории)
+        if archive_rows:
+            try:
+                sheet_archive = await retry_gspread(spreadsheet.worksheet, ARCHIVE_SHEET_TITLE)
+            except gspread.exceptions.WorksheetNotFound:
+                sheet_archive = await retry_gspread(
+                    spreadsheet.add_worksheet, title=ARCHIVE_SHEET_TITLE, rows='1000', cols='20')
+                await update_range(spreadsheet, f'{ARCHIVE_SHEET_TITLE}!A1:L1', [GROUPS_HEADER])
+            await retry_gspread(sheet_archive.append_rows, archive_rows)
+            logging.info(f"В архив перенесено групп: {len(archive_rows)}")
 
-        # Отправка batch-запросов пачками по 100
-        if requests:
-            data = [{'range': req['range'], 'values': req['values'], 'majorDimension': 'ROWS'} for req in requests]
-            await retry_google_api(sheets_api.spreadsheets().values().batchUpdate(
-                spreadsheetId=spreadsheet.id,
-                body={
-                    'valueInputOption': 'USER_ENTERED',
-                    'data': data
-                }
-            ).execute)
-
-# ... (finally и остальное без изменений)
+        # Полная перезапись Groups (архив уже сохранён, потеря невозможна)
+        await retry_gspread(sheet_groups.clear)
+        await retry_gspread(sheet_groups.append_rows, [GROUPS_HEADER] + final_rows)
+        logging.info(f"Groups перезаписан: {len(final_rows)} групп (новых: "
+                     f"{len(seen_patterns - set(existing_groups))})")
 
     except Exception as e:
         logging.error(f"Ошибка в main: {e}", exc_info=True)
     finally:
-        try:
-            scope = ['https://spreadsheets.google.com/feeds', 'https://www.googleapis.com/auth/drive']
-            creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-            client_gs = gspread.authorize(creds)
-            sheet_id = config.get('google_sheet_id')
-            if not sheet_id:
-                logging.warning("Идентификатор Google Sheet не найден в конфиге, пропускаем сортировку.")
-            else:
-                spreadsheet = await retry_gspread(client_gs.open_by_key, sheet_id)
-                sheet_groups = await retry_gspread(spreadsheet.worksheet, 'Groups')
-
-                # Получаем все строки
-                all_rows = await retry_gspread(sheet_groups.get_all_values)
-                if not all_rows:
-                    logging.info("Вкладка Groups пуста, сортировка не требуется.")
-                else:
-                    header = all_rows[0]
-                    body = all_rows[1:] if len(all_rows) > 1 else []
-
-                    def parse_row(row):
-                        try:
-                            return int(row[5]) if len(row) > 5 and row[5].strip().isdigit() else 0
-                        except:
-                            return 0
-
-                    body.sort(key=parse_row, reverse=True)
-                    new_data = [header] + body
-
-                    await retry_gspread(sheet_groups.clear)
-                    await retry_gspread(sheet_groups.append_rows, new_data)
-                    logging.info("Вкладка 'Groups' отсортирована по столбцу 'За 1 день' (через Python).")
-
-        except Exception as sort_error:
-            logging.error(f"Ошибка при сортировке вкладки Groups: {sort_error}")
-
+        # Отдельная пересортировка не нужна: Groups перезаписывается
+        # уже отсортированным по "За 30 дней" в основном блоке.
         if client is not None:
             await client.disconnect()
         if tmp_session_file and session_host_path and os.path.exists(tmp_session_file):
