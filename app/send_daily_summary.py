@@ -92,8 +92,38 @@ def _first_sentences(text, limit):
 
 
 def build_message(config):
-    """Сводка строится из вердиктов триажа (колонки Вердикт/Срочность/Действие
-    вкладки Groups): критичное — развёрнуто, шум — одной строкой."""
+    """Сводка = готовый дайджест, который утренняя рутина триажа пишет во
+    вкладку Digest (A1 — дата YYYY-MM-DD, A2 — текст сообщения в Markdown).
+    Если свежего дайджеста нет — НЕ отправляем ничего (сознательно без
+    фолбэка): пустая сводка хуже отсутствующей, а отсутствие заметно.
+    Возвращает None, если отправлять нечего."""
+    scope = [
+        "https://spreadsheets.google.com/feeds",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
+    client_gs = gspread.authorize(creds)
+    spreadsheet = client_gs.open_by_key(config["google_sheet_id"])
+    try:
+        digest = spreadsheet.worksheet("Digest")
+    except gspread.exceptions.WorksheetNotFound:
+        logging.error("Вкладка Digest не найдена — рутина триажа ещё не писала дайджест.")
+        return None
+
+    digest_date = (digest.acell("A1").value or "").strip()
+    text = (digest.acell("A2").value or "").strip()
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not text or digest_date != today:
+        logging.error(
+            "Свежего дайджеста нет (дата в Digest: %r, сегодня %s) — сводка не отправлена.",
+            digest_date, today,
+        )
+        return None
+    return text[:4000]
+
+
+def build_message_legacy(config):
+    """Старый механический формат — оставлен для ручной отладки."""
     scope = [
         "https://spreadsheets.google.com/feeds",
         "https://www.googleapis.com/auth/drive",
@@ -288,6 +318,10 @@ async def send_daily_summary():
             return
 
         message = build_message(config)
+        if message is None:
+            # Свежего дайджеста нет — не отправляем и НЕ помечаем день
+            # отправленным: следующее крон-окно попробует снова.
+            return
         session_file = os.path.join(BASE_DIR, config["session_name"])
         telegram_proxy = get_telegram_proxy(config)
         client = None
