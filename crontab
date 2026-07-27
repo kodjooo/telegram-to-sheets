@@ -18,9 +18,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Отправка ежедневного отчета каждый день в 6:19
 19 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') unknown_transaction.py ----" >> /app/logs/unknown_tx.log && /usr/local/bin/python3 unknown_transaction.py >> /app/logs/unknown_tx.log 2>&1
 
-# Отправка ежедневного отчета: с 7:10 (после утреннего триажа в ~6:35),
-# несколько окон повтора на случай сбоя
-10,30,50 7 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
-15,45 8 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
+# Отправка ежедневного отчета: 9:30 МСК (утренний триаж на Маке пользователя
+# стартует в 9:05 и пишет дайджест во вкладку Digest). Без свежего дайджеста
+# скрипт не шлёт ничего и пробует в следующее окно.
+30,45 9 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
+0,30 10 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
 
 # Пустая строка в конце файла (обязательна для cron)

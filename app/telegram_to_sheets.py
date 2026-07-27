@@ -1,4 +1,5 @@
 import os
+import hashlib
 import json
 import asyncio
 import logging
@@ -88,8 +89,13 @@ from normalize import merge_fragment_chains, normalize_error_pattern  # noqa: E4
 GROUPS_HEADER = [
     "Категория", "Ошибка (шаблон)",
     "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление",
-    "Статус", "Вердикт", "Срочность", "Причина", "Действие", "Оценено",
+    "Статус", "Вердикт", "Срочность", "Причина", "Действие", "Оценено", "ID",
 ]
+
+
+def group_id(pattern: str) -> str:
+    """Стабильный ID группы: не зависит от позиции строки и пересортировок."""
+    return hashlib.sha1(pattern.encode('utf-8')).hexdigest()[:8]
 ARCHIVE_SHEET_TITLE = 'Archive'
 RETENTION_DAYS = 90  # группы без появлений дольше этого срока уезжают в Archive
 
@@ -444,7 +450,7 @@ async def main():
         # Гарантированно добавим заголовки, если пусто
         group_values = await retry_gspread(sheet_groups.get_all_values)
         if not group_values or not any(cell.strip() for cell in group_values[0]):
-            await update_range(spreadsheet, 'Groups!A1:L1', [GROUPS_HEADER])
+            await update_range(spreadsheet, 'Groups!A1:M1', [GROUPS_HEADER])
 
         category_rules = await load_category_rules(spreadsheet)
 
@@ -538,29 +544,36 @@ async def main():
                 str(counts['1d']), str(counts['7d']), str(counts['30d']), last_seen,
                 status, verdict, s.get('urgency', ''),
                 s.get('cause', ''), s.get('action', ''), s.get('assessed', ''),
+                group_id(pattern),
             ]
 
-        # Свежие группы из текущего окна
-        for error_pattern, data in sorted(error_data.items(), key=lambda x: x[1]['counts']['30d'], reverse=True):
-            last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
-            saved = existing_groups.get(error_pattern)
-            existing_last = (saved or {}).get('last_seen', '')
-            final_rows.append(build_row(
-                error_pattern, data['counts'],
-                max(last_seen_str, existing_last), saved
-            ))
-            seen_patterns.add(error_pattern)
-
-        # Старые группы: счётчики в ноль; совсем протухшие — в архив
+        # ПОРЯДОК СТРОК СТАБИЛЬНЫЙ: существующие группы сохраняют свои позиции
+        # (ссылки на строки в дайджестах не съезжают), новые дописываются вниз.
         zero = {'1d': 0, '7d': 0, '30d': 0}
         for pattern, saved in existing_groups.items():
-            if pattern in seen_patterns:
+            data = error_data.get(pattern)
+            if data is not None:
+                last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
+                final_rows.append(build_row(
+                    pattern, data['counts'],
+                    max(last_seen_str, saved.get('last_seen', '')), saved
+                ))
+                seen_patterns.add(pattern)
                 continue
+            # Не встречалась в окне: счётчики в ноль; совсем протухшая — в архив
             row = build_row(pattern, zero, saved.get('last_seen', ''), saved)
             if saved.get('last_seen', '') and saved['last_seen'] < retention_cutoff:
                 archive_rows.append(row)
             else:
                 final_rows.append(row)
+
+        # Новые группы — вниз, между собой по объёму за 30 дней
+        for pattern, data in sorted(error_data.items(), key=lambda x: x[1]['counts']['30d'], reverse=True):
+            if pattern in seen_patterns or pattern in existing_groups:
+                continue
+            last_seen_str = data['last_seen'].strftime('%Y-%m-%d %H:%M:%S') if data['last_seen'] else ''
+            final_rows.append(build_row(pattern, data['counts'], last_seen_str, None))
+            seen_patterns.add(pattern)
 
         # Архив: дозаписываем протухшие группы (вердикты сохраняются в истории)
         if archive_rows:
@@ -569,7 +582,7 @@ async def main():
             except gspread.exceptions.WorksheetNotFound:
                 sheet_archive = await retry_gspread(
                     spreadsheet.add_worksheet, title=ARCHIVE_SHEET_TITLE, rows='1000', cols='20')
-                await update_range(spreadsheet, f'{ARCHIVE_SHEET_TITLE}!A1:L1', [GROUPS_HEADER])
+                await update_range(spreadsheet, f'{ARCHIVE_SHEET_TITLE}!A1:M1', [GROUPS_HEADER])
             await retry_gspread(sheet_archive.append_rows, archive_rows)
             logging.info(f"В архив перенесено групп: {len(archive_rows)}")
 
