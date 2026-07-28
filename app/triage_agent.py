@@ -288,9 +288,11 @@ def main():
         try:
             resp = client.chat.completions.create(messages=messages, **create_kwargs)
         except Exception as e:
-            if 'reasoning_effort' in create_kwargs and 'reasoning' in str(e).lower():
-                logging.warning('Модель не принимает reasoning_effort — повтор без него.')
-                create_kwargs.pop('reasoning_effort')
+            if 'reasoning' in str(e).lower() and create_kwargs.get('reasoning_effort') != 'none':
+                # GPT-5.6 в chat/completions поддерживает инструменты только
+                # с reasoning_effort='none' (иначе нужен /v1/responses)
+                logging.warning("Модель требует reasoning_effort='none' для tools — переключаюсь.")
+                create_kwargs['reasoning_effort'] = 'none'
                 resp = client.chat.completions.create(messages=messages, **create_kwargs)
             else:
                 raise
