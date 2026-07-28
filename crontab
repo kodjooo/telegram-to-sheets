@@ -23,5 +23,6 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # скрипт не шлёт ничего и пробует в следующее окно.
 30,45 9 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
 0,30 10 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
+0 11,12,13,15 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') send_daily_summary.py ----" >> /app/logs/daily_summary.log && /usr/local/bin/python3 send_daily_summary.py >> /app/logs/daily_summary.log 2>&1
 
 # Пустая строка в конце файла (обязательна для cron)
