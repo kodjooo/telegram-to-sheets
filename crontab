@@ -10,6 +10,10 @@ PATH=/usr/local/bin:/usr/bin:/bin
 # Отправка ежедневного отчета каждый день в 6:19
 19 6 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') unknown_transaction.py ----" >> /app/logs/unknown_tx.log && /usr/local/bin/python3 unknown_transaction.py >> /app/logs/unknown_tx.log 2>&1
 
+# Автономный агент триажа: вердикты + дайджест дня (вместо локальной рутины).
+# Идемпотентен: если дайджест за сегодня уже есть — сразу выходит.
+5 9 * * * cd /app && echo "---- $(date '+\%Y-\%m-\%d \%H:\%M:\%S') triage_agent.py ----" >> /app/logs/triage_agent.log && /usr/local/bin/python3 triage_agent.py >> /app/logs/triage_agent.log 2>&1
+
 # Отправка ежедневного отчета: 9:30 МСК (утренний триаж на Маке пользователя
 # стартует в 9:05 и пишет дайджест во вкладку Digest). Без свежего дайджеста
 # скрипт не шлёт ничего и пробует в следующее окно.

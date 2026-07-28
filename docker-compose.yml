@@ -17,6 +17,8 @@ services:
       - ./app:/app
       # Подключение логов для сохранения на хосте
       - ./logs:/app/logs
+      # SSH-ключи хоста (read-only) — для triage_agent.py: доступ к прод-серверу
+      - /home/developer/.ssh:/root/.ssh:ro
     
     logging:
       driver: json-file

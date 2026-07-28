@@ -6,6 +6,7 @@ RUN apt-get update && apt-get install -y \
     cron \
     tzdata \
     python-is-python3 \
+    openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 # Установка рабочей директории
