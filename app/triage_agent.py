@@ -216,12 +216,18 @@ def main():
         logging.error('openai_api_key не задан в config.json — агент не запущен.')
         return
 
+    # Тестовый режим (сравнение моделей): ничего не пишем в таблицу,
+    # вердикты и дайджест — в файлы logs/, идемпотентность отключена.
+    test_mode = bool(os.environ.get('TRIAGE_TEST'))
+    model = os.environ.get('TRIAGE_MODEL') or config.get('openai_model', 'gpt-5.1')
+    effort = os.environ.get('TRIAGE_EFFORT') or config.get('openai_reasoning_effort', 'low')
+
     ss = open_spreadsheet(config)
 
     today = datetime.now().strftime('%Y-%m-%d')
     try:
         digest_ws = ss.worksheet('Digest')
-        if (digest_ws.acell('A1').value or '').strip() == today:
+        if not test_mode and (digest_ws.acell('A1').value or '').strip() == today:
             logging.info('Дайджест за %s уже записан — выходим.', today)
             return
     except gspread.exceptions.WorksheetNotFound:
@@ -248,7 +254,7 @@ def main():
         raw_cache[p].append((m['date'], m['text']))
 
     client = OpenAI(api_key=config['openai_api_key'])
-    model = config.get('openai_model', 'gpt-5.1')
+    logging.info('Модель: %s, effort: %s, test_mode: %s', model, effort, test_mode)
 
     user_msg = (
         f"Всего логов за сутки: {total_1d}, из них известный фон: {bg_1d}.\n"
@@ -266,9 +272,27 @@ def main():
 
     verdicts_written = 0
     digest_written = False
+    test_verdicts = []
+    usage = {'prompt': 0, 'completion': 0, 'cached': 0}
+    create_kwargs = {'model': model, 'tools': TOOLS}
+    if effort:
+        create_kwargs['reasoning_effort'] = effort
 
     for step in range(MAX_STEPS):
-        resp = client.chat.completions.create(model=model, messages=messages, tools=TOOLS)
+        try:
+            resp = client.chat.completions.create(messages=messages, **create_kwargs)
+        except Exception as e:
+            if 'reasoning_effort' in create_kwargs and 'reasoning' in str(e).lower():
+                logging.warning('Модель не принимает reasoning_effort — повтор без него.')
+                create_kwargs.pop('reasoning_effort')
+                resp = client.chat.completions.create(messages=messages, **create_kwargs)
+            else:
+                raise
+        if resp.usage:
+            usage['prompt'] += resp.usage.prompt_tokens or 0
+            usage['completion'] += resp.usage.completion_tokens or 0
+            details = getattr(resp.usage, 'prompt_tokens_details', None)
+            usage['cached'] += getattr(details, 'cached_tokens', 0) or 0
         msg = resp.choices[0].message
         messages.append(msg.model_dump(exclude_none=True))
         if not msg.tool_calls:
@@ -293,16 +317,26 @@ def main():
                 logging.info('prod_sql: %s', args.get('query', '')[:200])
             elif name == 'write_verdict':
                 row = int(args['row'])
-                groups_ws.batch_update([{
-                    'range': f'G{row}:L{row}',
-                    'values': [['обработано', args['verdict'], args.get('urgency', ''),
-                                args['cause'], args['action'][:900], today]]}])
+                if test_mode:
+                    test_verdicts.append(args)
+                else:
+                    groups_ws.batch_update([{
+                        'range': f'G{row}:L{row}',
+                        'values': [['обработано', args['verdict'], args.get('urgency', ''),
+                                    args['cause'], args['action'][:900], today]]}])
                 verdicts_written += 1
                 result = f'ok, вердикт записан в строку {row}'
             elif name == 'write_digest':
                 text = (args.get('text') or '').strip()[:3950]
                 if len(text) < 200:
                     result = 'ОТКЛОНЕНО: дайджест подозрительно короткий, напиши полноценный.'
+                elif test_mode:
+                    path = os.path.join(BASE_DIR, f'logs/digest_test_{model}_{effort}.md')
+                    with open(path, 'w', encoding='utf-8') as f:
+                        f.write(text + '\n\n===ВЕРДИКТЫ===\n' +
+                                json.dumps(test_verdicts, ensure_ascii=False, indent=1))
+                    digest_written = True
+                    result = f'ok, дайджест записан (тест: {path})'
                 else:
                     digest_ws.update(values=[[today], [text]], range_name='A1:A2')
                     digest_written = True
@@ -316,6 +350,8 @@ def main():
 
     logging.info('Готово: вердиктов %s/%s, дайджест: %s, шагов: %s',
                  verdicts_written, len(worklist), digest_written, step + 1)
+    logging.info('USAGE model=%s effort=%s prompt=%s (cached=%s) completion=%s',
+                 model, effort, usage['prompt'], usage['cached'], usage['completion'])
     if not digest_written:
         logging.error('Агент завершился БЕЗ дайджеста — сводка сегодня не уйдёт.')
 
