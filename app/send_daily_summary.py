@@ -4,9 +4,7 @@ import json
 import logging
 import os
 import random
-import re
-from collections import defaultdict
-from datetime import datetime, timedelta
+from datetime import datetime
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -56,41 +54,6 @@ def save_state(state):
     os.replace(tmp_path, STATE_PATH)
 
 
-MAX_RED_LINES = 8
-MAX_YELLOW_LINES = 8
-MAX_UNRATED_LINES = 5
-TELEGRAM_LIMIT = 4000  # запас от лимита 4096, чтобы ссылка в конце всегда была цела
-
-_NOISE_RE = re.compile(r'^production\.(ERROR|WARNING|INFO):\s*')
-
-
-def _short(text, limit):
-    text = text.strip()
-    return text if len(text) <= limit else text[: limit - 1] + "…"
-
-
-def _clean_pattern(pattern, limit=80):
-    """Убирает технический шум из шаблона для показа человеку."""
-    p = _NOISE_RE.sub('', pattern).strip()
-    p = re.sub(r'\s*\[[A-Z][\w\\, \[\]]{15,}…?\]?$', '', p)  # хвост [Illuminate\... ]
-    p = re.sub(r'\s*\{"?exception"?:.*$', '', p)   # JSON-огрызок {"exception":...
-    p = re.sub(r'\s*\{\}\s*\[\]\s*$', '', p)       # хвост {}[]
-    return _short(p, limit)
-
-
-def _first_sentences(text, limit):
-    """Обрезка по границе предложения, а не на полуслове."""
-    text = text.strip()
-    if len(text) <= limit:
-        return text
-    cut = text[:limit]
-    for sep in ('. ', '; ', ' — '):
-        pos = cut.rfind(sep)
-        if pos > limit // 2:
-            return cut[:pos + 1].rstrip()
-    return cut.rsplit(' ', 1)[0] + '…'
-
-
 def build_message(config):
     """Сводка = готовый дайджест, который утренняя рутина триажа пишет во
     вкладку Digest (A1 — дата YYYY-MM-DD, A2 — текст сообщения в Markdown).
@@ -120,127 +83,6 @@ def build_message(config):
         )
         return None
     return text[:4000]
-
-
-def build_message_legacy(config):
-    """Старый механический формат — оставлен для ручной отладки."""
-    scope = [
-        "https://spreadsheets.google.com/feeds",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    creds = ServiceAccountCredentials.from_json_keyfile_name(CREDENTIALS_FILE, scope)
-    client_gs = gspread.authorize(creds)
-    spreadsheet = client_gs.open_by_key(config["google_sheet_id"])
-    sheet = spreadsheet.worksheet("Groups")
-
-    rows = sheet.get_all_values()
-    if not rows or len(rows) < 2:
-        return "⚠️ Нет данных для формирования отчета."
-
-    header = rows[0]
-    idx = {name: header.index(name) for name in header if name}
-
-    def col(row, name):
-        i = idx.get(name)
-        return row[i].strip() if i is not None and len(row) > i else ""
-
-    act, watch, unrated = [], [], []
-    background_logs = 0
-    total = 0
-
-    for row in rows[1:]:
-        try:
-            count = int(col(row, "За 1 день") or 0)
-        except ValueError:
-            continue
-        total += count
-        if count == 0:
-            continue
-        verdict = col(row, "Вердикт").lower()
-        entry = {
-            "pattern": col(row, "Ошибка (шаблон)"),
-            "count": count,
-            "urgency": col(row, "Срочность"),
-            "action": col(row, "Действие"),
-        }
-        if verdict == "действовать":
-            act.append(entry)
-        elif verdict == "понаблюдать":
-            watch.append(entry)
-        elif verdict == "игнорировать":
-            background_logs += count
-        else:  # вердикта нет — не оценено
-            unrated.append(entry)
-
-    report_date = datetime.now() - timedelta(days=1)
-    lines = [f"🧾 Сводка за {report_date.strftime('%d.%m.%Y')} — {total} логов за сутки", ""]
-
-    if act:
-        # Один инцидент часто размазан по многим группам (разные джобы, разные
-        # SQLSTATE-коды) с одинаковым текстом «Действия» — схлопываем в одну
-        # строку с суммарным счётчиком.
-        collapsed = {}
-        for e in act:
-            key = e["action"].strip().lower()[:80] or e["pattern"]
-            if key in collapsed:
-                collapsed[key]["count"] += e["count"]
-                collapsed[key]["groups"] += 1
-            else:
-                collapsed[key] = {**e, "groups": 1}
-        act = list(collapsed.values())
-        act.sort(key=lambda e: -e["count"])
-        lines.append(f"🔴 Действовать ({len(act)}):")
-        for e in act[:MAX_RED_LINES]:
-            urgency = f" [{e['urgency']}]" if e["urgency"] else ""
-            multi = f" (в {e['groups']} группах)" if e.get("groups", 1) > 1 else ""
-            lines.append(f"• {_clean_pattern(e['pattern'])} — {e['count']}/сутки{multi}{urgency}")
-            if e["action"]:
-                lines.append(f"  ↳ {_first_sentences(e['action'], 170)}")
-        if len(act) > MAX_RED_LINES:
-            lines.append(f"  …и ещё {len(act) - MAX_RED_LINES} (см. таблицу)")
-        lines.append("")
-
-    if watch:
-        watch.sort(key=lambda e: -e["count"])
-        watch_logs = sum(e["count"] for e in watch)
-        lines.append(f"🟡 Понаблюдать ({len(watch)} групп, {watch_logs} логов):")
-        for e in watch[:MAX_YELLOW_LINES]:
-            lines.append(f"• {_clean_pattern(e['pattern'])} — {e['count']}/сутки")
-        if len(watch) > MAX_YELLOW_LINES:
-            lines.append(f"  …и ещё {len(watch) - MAX_YELLOW_LINES}")
-        lines.append("")
-
-    if unrated:
-        unrated.sort(key=lambda e: -e["count"])
-        unrated_logs = sum(e["count"] for e in unrated)
-        lines.append(f"⚠️ Не оценено триажем ({len(unrated)} групп, {unrated_logs} логов):")
-        for e in unrated[:MAX_UNRATED_LINES]:
-            lines.append(f"• {_clean_pattern(e['pattern'])} — {e['count']}/сутки")
-        if len(unrated) > MAX_UNRATED_LINES:
-            lines.append(f"  …и ещё {len(unrated) - MAX_UNRATED_LINES}")
-        lines.append("")
-
-    if not act and not watch and not unrated:
-        lines.append("✅ Ничего требующего внимания: весь объём — известный фон.")
-        lines.append("")
-
-    if background_logs:
-        lines.append(f"⚪ Известный фон (вердикт «игнорировать»): {background_logs} логов")
-
-    footer = "\n👉 [Подробнее](https://docs.google.com/spreadsheets/d/1eSuLIAlnxkZHA4jy2cBZVwWiA__NZ3pl5hncxU7O3RU/edit?gid=807594473)"
-
-    # Лимит Telegram: если не влезаем — убираем строки с конца ЖЁЛТОГО и
-    # «не оценено»-блоков (наименее важное), но никогда не рвём хвост и ссылку.
-    message = "\n".join(lines) + footer
-    while len(message) > TELEGRAM_LIMIT:
-        for i in range(len(lines) - 1, -1, -1):
-            if lines[i].startswith("• ") and not lines[i - 1].startswith("🔴") and "↳" not in lines[i]:
-                del lines[i]
-                break
-        else:
-            lines = lines[:-1]
-        message = "\n".join(lines) + footer
-    return message
 
 
 async def connect_with_retries(session_file, api_id, api_hash, proxy):
