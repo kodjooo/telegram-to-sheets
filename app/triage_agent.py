@@ -63,7 +63,11 @@ def load_config():
 def _ssh_run(config, remote_script: str) -> str:
     """Выполняет скрипт на проде через base64 (без проблем с кавычками)."""
     b64 = base64.b64encode(remote_script.encode()).decode()
-    cmd = ['ssh', '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',
+    # -F /dev/null: смонтированный ~/.ssh принадлежит другому uid,
+    # чужой config ssh-клиент отвергает — работаем без него, ключ явно.
+    cmd = ['ssh', '-F', '/dev/null', '-i', '/root/.ssh/id_rsa',
+           '-o', 'UserKnownHostsFile=/root/.ssh/known_hosts',
+           '-o', 'ConnectTimeout=10', '-o', 'BatchMode=yes',
            config.get('prod_ssh', 'app-dev@212.41.30.188'),
            f'echo {b64} | base64 -d | timeout {SSH_TIMEOUT} bash']
     try:
