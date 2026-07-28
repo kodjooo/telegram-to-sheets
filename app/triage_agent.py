@@ -146,38 +146,38 @@ def get_examples(raw_logs_cache, pattern: str) -> str:
 
 # ===== Агентный цикл =====
 
+# Формат Responses API: плоские function-инструменты со strict-схемами
 TOOLS = [
-    {"type": "function", "function": {
-        "name": "get_examples",
-        "description": "2–3 сырых примера логов группы из Original data (с живыми ID и значениями).",
-        "parameters": {"type": "object", "properties": {
-            "pattern": {"type": "string", "description": "Точный шаблон группы (колонка B)"}},
-            "required": ["pattern"]}}},
-    {"type": "function", "function": {
-        "name": "prod_exec",
-        "description": "Read-only команда на прод-сервере из каталога /var/www/app.sellerdata.ru. Разрешены grep/tail/head/cat/ls/wc/stat/find/awk/cut/sort/uniq и пайпы. Полные логи: storage/logs/laravel.log, storage/logs/account-<дата>.log. Код: app/...",
-        "parameters": {"type": "object", "properties": {
-            "command": {"type": "string"}}, "required": ["command"]}}},
-    {"type": "function", "function": {
-        "name": "prod_sql",
-        "description": "Одиночный SELECT/SHOW/EXPLAIN в прод-БД appsellerdata (LIMIT добавится автоматически).",
-        "parameters": {"type": "object", "properties": {
-            "query": {"type": "string"}}, "required": ["query"]}}},
-    {"type": "function", "function": {
-        "name": "write_verdict",
-        "description": "Записать вердикт группе (строка листа Groups).",
-        "parameters": {"type": "object", "properties": {
-            "row": {"type": "integer"},
-            "verdict": {"type": "string", "enum": ["действовать", "понаблюдать", "игнорировать"]},
-            "urgency": {"type": "string", "enum": ["сегодня", "неделя", "бэклог", ""]},
-            "cause": {"type": "string", "enum": ["код", "данные", "инфра", "внешний сервис", "обрезки сообщений"]},
-            "action": {"type": "string", "description": "1–3 предложения: что происходит и что делать"}},
-            "required": ["row", "verdict", "cause", "action"]}}},
-    {"type": "function", "function": {
-        "name": "write_digest",
-        "description": "Записать финальный дайджест дня (вкладка Digest). Вызывается ОДИН раз в самом конце.",
-        "parameters": {"type": "object", "properties": {
-            "text": {"type": "string"}}, "required": ["text"]}}},
+    {"type": "function", "name": "get_examples", "strict": True,
+     "description": "2–3 сырых примера логов группы из Original data (с живыми ID и значениями). ОБЯЗАТЕЛЕН перед вердиктом каждой активной группы.",
+     "parameters": {"type": "object", "additionalProperties": False,
+                    "properties": {"pattern": {"type": "string", "description": "Точный шаблон группы (колонка B), как в списке"}},
+                    "required": ["pattern"]}},
+    {"type": "function", "name": "prod_exec", "strict": True,
+     "description": "Read-only команда на прод-сервере из /var/www/app.sellerdata.ru. Разрешены grep/tail/head/cat/ls/wc/stat/find/awk/cut/sort/uniq и пайпы. Полные логи со стеками: storage/logs/laravel.log, storage/logs/account-<дата>.log. Код приложения: app/...",
+     "parameters": {"type": "object", "additionalProperties": False,
+                    "properties": {"command": {"type": "string"}},
+                    "required": ["command"]}},
+    {"type": "function", "name": "prod_sql", "strict": True,
+     "description": "Одиночный SELECT/SHOW/EXPLAIN в прод-БД appsellerdata (LIMIT добавится автоматически).",
+     "parameters": {"type": "object", "additionalProperties": False,
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"]}},
+    {"type": "function", "name": "write_verdict", "strict": True,
+     "description": "Записать вердикт группе (строка листа Groups). Для активных групп принимается только ПОСЛЕ расследования (минимум get_examples).",
+     "parameters": {"type": "object", "additionalProperties": False,
+                    "properties": {
+                        "row": {"type": "integer"},
+                        "verdict": {"type": "string", "enum": ["действовать", "понаблюдать", "игнорировать"]},
+                        "urgency": {"type": "string", "enum": ["сегодня", "неделя", "бэклог", ""]},
+                        "cause": {"type": "string", "enum": ["код", "данные", "инфра", "внешний сервис", "обрезки сообщений"]},
+                        "action": {"type": "string", "description": "1–3 предложения: что происходит и что делать"}},
+                    "required": ["row", "verdict", "urgency", "cause", "action"]}},
+    {"type": "function", "name": "write_digest", "strict": True,
+     "description": "Записать финальный дайджест дня (вкладка Digest). Вызывается ОДИН раз в самом конце, после всех вердиктов.",
+     "parameters": {"type": "object", "additionalProperties": False,
+                    "properties": {"text": {"type": "string"}},
+                    "required": ["text"]}},
 ]
 
 
@@ -185,7 +185,7 @@ def system_prompt(today, sheet_id):
     base = f'https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={GROUPS_GID}&range=A'
     return f"""Ты — дежурный инженер сервиса sellerdata (аналитика маркетплейсов: синки Wildberries/Ozon, подписки, платежи Tinkoff/Forte). Сегодня {today}. Твоя задача: разобрать выданный список групп ошибок, поставить каждой вердикт (write_verdict) и в конце написать дайджест дня (write_digest).
 
-РАССЛЕДОВАНИЕ. Сначала get_examples; если сути не видно — prod_exec (полный лог со стеком: grep -m3 -A15 'подстрока' storage/logs/laravel.log; код: cat/grep по путям из стеков) и prod_sql для проверки гипотез о данных. Не больше ~5 обращений на группу. Прод только для чтения. Если не уверен — вердикт «понаблюдать» с пометкой «низкая уверенность», не выдумывай.
+РАССЛЕДОВАНИЕ — ОБЯЗАТЕЛЬНО, вердикты без него отклоняются. Для КАЖДОЙ активной группы (за 1д > 0): сначала get_examples по её шаблону. Для production.ERROR с 1д ≥ 10 — дополнительно prod_exec (полный лог со стеком: grep -m3 -A15 'подстрока' storage/logs/laravel.log) и при необходимости код (cat/grep по путям из стеков) и prod_sql для проверки гипотез о данных (например, failed_jobs после инцидентов с очередями). Ищи то, чего НЕТ в счётчиках: последствия (потерянные джобы, незаписанные данные), первопричины в коде, чувствительные данные в логах. Не больше ~5 обращений на группу. Прод только для чтения. Если не уверен — «понаблюдать» с пометкой «низкая уверенность», не выдумывай.
 
 ВЕРДИКТЫ. Одна первопричина у нескольких групп → одинаковый action с пометкой «один инцидент с #<ID главной группы>». Мусорные обрезки (обрывки с {{}}[] посреди шаблона, счётчики 0–2) → «игнорировать», cause «обрезки сообщений», без расследования. Группы «DATA: Unknown transaction type» — всегда «действовать»: достань конкретные operation_type и суммы из примеров.
 
@@ -273,50 +273,54 @@ def main():
         "\n\nРазбери группы и запиши вердикты, затем один раз вызови write_digest."
     )
 
-    messages = [{"role": "system", "content": system_prompt(today, config['google_sheet_id'])},
-                {"role": "user", "content": user_msg}]
+    input_list = [{"role": "developer", "content": system_prompt(today, config['google_sheet_id'])},
+                  {"role": "user", "content": user_msg}]
 
     verdicts_written = 0
     digest_written = False
     test_verdicts = []
-    usage = {'prompt': 0, 'completion': 0, 'cached': 0}
-    create_kwargs = {'model': model, 'tools': TOOLS}
+    usage = {'prompt': 0, 'completion': 0, 'cached': 0, 'reasoning': 0}
+    # Принуждение к расследованию: активная группа (1д>0) не получит вердикт,
+    # пока по её шаблону не запрошены сырые примеры.
+    worklist_by_row = {it['row']: it for it in worklist}
+    investigated = set()  # шаблоны (обрезанные до 250), по которым был get_examples
+
+    kwargs = {'model': model, 'tools': TOOLS, 'max_output_tokens': 30000}
     if effort:
-        create_kwargs['reasoning_effort'] = effort
+        kwargs['reasoning'] = {'effort': effort}
 
     for step in range(MAX_STEPS):
-        try:
-            resp = client.chat.completions.create(messages=messages, **create_kwargs)
-        except Exception as e:
-            if 'reasoning' in str(e).lower() and create_kwargs.get('reasoning_effort') != 'none':
-                # GPT-5.6 в chat/completions поддерживает инструменты только
-                # с reasoning_effort='none' (иначе нужен /v1/responses)
-                logging.warning("Модель требует reasoning_effort='none' для tools — переключаюсь.")
-                create_kwargs['reasoning_effort'] = 'none'
-                resp = client.chat.completions.create(messages=messages, **create_kwargs)
-            else:
-                raise
+        resp = client.responses.create(input=input_list, **kwargs)
         if resp.usage:
-            usage['prompt'] += resp.usage.prompt_tokens or 0
-            usage['completion'] += resp.usage.completion_tokens or 0
-            details = getattr(resp.usage, 'prompt_tokens_details', None)
-            usage['cached'] += getattr(details, 'cached_tokens', 0) or 0
-        msg = resp.choices[0].message
-        messages.append(msg.model_dump(exclude_none=True))
-        if not msg.tool_calls:
+            usage['prompt'] += resp.usage.input_tokens or 0
+            usage['completion'] += resp.usage.output_tokens or 0
+            in_det = getattr(resp.usage, 'input_tokens_details', None)
+            usage['cached'] += getattr(in_det, 'cached_tokens', 0) or 0
+            out_det = getattr(resp.usage, 'output_tokens_details', None)
+            usage['reasoning'] += getattr(out_det, 'reasoning_tokens', 0) or 0
+
+        # Возвращаем модели ВЕСЬ вывод, включая reasoning-блоки (требование
+        # Responses API для reasoning-моделей с инструментами)
+        input_list += resp.output
+
+        calls = [item for item in resp.output if item.type == 'function_call']
+        if not calls:
             if digest_written:
                 break
-            messages.append({"role": "user", "content":
-                             "Дайджест ещё не записан — заверши работу вызовом write_digest."})
+            input_list.append({"role": "user", "content":
+                               "Дайджест ещё не записан — заверши работу вызовом write_digest."})
             continue
-        for tc in msg.tool_calls:
-            name = tc.function.name
+
+        for tc in calls:
+            name = tc.name
             try:
-                args = json.loads(tc.function.arguments or '{}')
+                args = json.loads(tc.arguments or '{}')
             except json.JSONDecodeError:
                 args = {}
             if name == 'get_examples':
-                result = get_examples(raw_cache, args.get('pattern', ''))
+                pattern = (args.get('pattern') or '').strip()[:250]
+                investigated.add(pattern)
+                result = get_examples(raw_cache, pattern)
             elif name == 'prod_exec':
                 result = tool_prod_exec(config, args.get('command', ''))
                 logging.info('prod_exec: %s', args.get('command', '')[:200])
@@ -325,19 +329,33 @@ def main():
                 logging.info('prod_sql: %s', args.get('query', '')[:200])
             elif name == 'write_verdict':
                 row = int(args['row'])
-                if test_mode:
-                    test_verdicts.append(args)
+                item = worklist_by_row.get(row)
+                needs_investigation = (
+                    item is not None and item['d1'] > 0
+                    and args.get('cause') != 'обрезки сообщений'
+                    and item['pattern'][:250] not in investigated
+                )
+                if needs_investigation:
+                    result = ('ОТКЛОНЕНО: активная группа без расследования. Сначала '
+                              'вызови get_examples для её шаблона (и prod_exec для '
+                              'production.ERROR), затем повтори write_verdict.')
                 else:
-                    groups_ws.batch_update([{
-                        'range': f'G{row}:L{row}',
-                        'values': [['обработано', args['verdict'], args.get('urgency', ''),
-                                    args['cause'], args['action'][:900], today]]}])
-                verdicts_written += 1
-                result = f'ok, вердикт записан в строку {row}'
+                    if test_mode:
+                        test_verdicts.append(args)
+                    else:
+                        groups_ws.batch_update([{
+                            'range': f'G{row}:L{row}',
+                            'values': [['обработано', args['verdict'], args.get('urgency', ''),
+                                        args['cause'], args['action'][:900], today]]}])
+                    verdicts_written += 1
+                    result = f'ok, вердикт записан в строку {row}'
             elif name == 'write_digest':
                 text = (args.get('text') or '').strip()[:3950]
                 if len(text) < 200:
                     result = 'ОТКЛОНЕНО: дайджест подозрительно короткий, напиши полноценный.'
+                elif verdicts_written < len(worklist):
+                    result = (f'ОТКЛОНЕНО: вердикты записаны только для {verdicts_written} '
+                              f'из {len(worklist)} групп — сначала заверши триаж.')
                 elif test_mode:
                     path = os.path.join(BASE_DIR, f'logs/digest_test_{model}_{effort}.md')
                     with open(path, 'w', encoding='utf-8') as f:
@@ -351,15 +369,16 @@ def main():
                     result = 'ok, дайджест записан'
             else:
                 result = f'неизвестный инструмент {name}'
-            messages.append({"role": "tool", "tool_call_id": tc.id,
-                             "content": str(result)[:MAX_TOOL_OUTPUT]})
-        if digest_written and verdicts_written >= len(worklist):
+            input_list.append({"type": "function_call_output", "call_id": tc.call_id,
+                               "output": str(result)[:MAX_TOOL_OUTPUT]})
+        if digest_written:
             break
 
     logging.info('Готово: вердиктов %s/%s, дайджест: %s, шагов: %s',
                  verdicts_written, len(worklist), digest_written, step + 1)
-    logging.info('USAGE model=%s effort=%s prompt=%s (cached=%s) completion=%s',
-                 model, effort, usage['prompt'], usage['cached'], usage['completion'])
+    logging.info('USAGE model=%s effort=%s prompt=%s (cached=%s) completion=%s (reasoning=%s)',
+                 model, effort, usage['prompt'], usage['cached'],
+                 usage['completion'], usage['reasoning'])
     if not digest_written:
         logging.error('Агент завершился БЕЗ дайджеста — сводка сегодня не уйдёт.')
 
