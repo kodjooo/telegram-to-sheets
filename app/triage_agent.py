@@ -151,8 +151,8 @@ TOOLS = [
     {"type": "function", "name": "get_examples", "strict": True,
      "description": "2–3 сырых примера логов группы из Original data (с живыми ID и значениями). ОБЯЗАТЕЛЕН перед вердиктом каждой активной группы.",
      "parameters": {"type": "object", "additionalProperties": False,
-                    "properties": {"pattern": {"type": "string", "description": "Точный шаблон группы (колонка B), как в списке"}},
-                    "required": ["pattern"]}},
+                    "properties": {"row": {"type": "integer", "description": "Номер строки группы из списка (первое поле)"}},
+                    "required": ["row"]}},
     {"type": "function", "name": "prod_exec", "strict": True,
      "description": "Read-only команда на прод-сервере из /var/www/app.sellerdata.ru. Разрешены grep/tail/head/cat/ls/wc/stat/find/awk/cut/sort/uniq и пайпы. Полные логи со стеками: storage/logs/laravel.log, storage/logs/account-<дата>.log. Код приложения: app/...",
      "parameters": {"type": "object", "additionalProperties": False,
@@ -185,7 +185,7 @@ def system_prompt(today, sheet_id):
     base = f'https://docs.google.com/spreadsheets/d/{sheet_id}/edit#gid={GROUPS_GID}&range=A'
     return f"""Ты — дежурный инженер сервиса sellerdata (аналитика маркетплейсов: синки Wildberries/Ozon, подписки, платежи Tinkoff/Forte). Сегодня {today}. Твоя задача: разобрать выданный список групп ошибок, поставить каждой вердикт (write_verdict) и в конце написать дайджест дня (write_digest).
 
-РАССЛЕДОВАНИЕ — ОБЯЗАТЕЛЬНО, вердикты без него отклоняются. Для КАЖДОЙ активной группы (за 1д > 0): сначала get_examples по её шаблону. Для production.ERROR с 1д ≥ 10 — дополнительно prod_exec (полный лог со стеком: grep -m3 -A15 'подстрока' storage/logs/laravel.log) и при необходимости код (cat/grep по путям из стеков) и prod_sql для проверки гипотез о данных (например, failed_jobs после инцидентов с очередями). Ищи то, чего НЕТ в счётчиках: последствия (потерянные джобы, незаписанные данные), первопричины в коде, чувствительные данные в логах. Не больше ~5 обращений на группу. Прод только для чтения. Если не уверен — «понаблюдать» с пометкой «низкая уверенность», не выдумывай.
+РАССЛЕДОВАНИЕ — ОБЯЗАТЕЛЬНО, вердикты без него отклоняются. Для КАЖДОЙ активной группы (за 1д > 0): сначала get_examples по номеру её строки. Для production.ERROR с 1д ≥ 10 — дополнительно prod_exec (полный лог со стеком: grep -m3 -A15 'подстрока' storage/logs/laravel.log) и при необходимости код (cat/grep по путям из стеков) и prod_sql для проверки гипотез о данных (например, failed_jobs после инцидентов с очередями). Ищи то, чего НЕТ в счётчиках: последствия (потерянные джобы, незаписанные данные), первопричины в коде, чувствительные данные в логах. Не больше ~5 обращений на группу. Прод только для чтения. Если не уверен — «понаблюдать» с пометкой «низкая уверенность», не выдумывай.
 
 ВЕРДИКТЫ. Одна первопричина у нескольких групп → одинаковый action с пометкой «один инцидент с #<ID главной группы>». Мусорные обрезки (обрывки с {{}}[] посреди шаблона, счётчики 0–2) → «игнорировать», cause «обрезки сообщений», без расследования. Группы «DATA: Unknown transaction type» — всегда «действовать»: достань конкретные operation_type и суммы из примеров.
 
@@ -281,9 +281,11 @@ def main():
     test_verdicts = []
     usage = {'prompt': 0, 'completion': 0, 'cached': 0, 'reasoning': 0}
     # Принуждение к расследованию: активная группа (1д>0) не получит вердикт,
-    # пока по её шаблону не запрошены сырые примеры.
+    # пока по ней не запрошены сырые примеры. Учёт — по номеру строки
+    # (текст шаблона модели передают неточно, это вызывало циклы отказов).
     worklist_by_row = {it['row']: it for it in worklist}
-    investigated = set()  # шаблоны (обрезанные до 250), по которым был get_examples
+    investigated = set()  # номера строк, по которым был get_examples
+    MAX_PROMPT_BUDGET = 2_000_000  # потолок входных токенов на прогон
 
     kwargs = {'model': model, 'tools': TOOLS, 'max_output_tokens': 30000}
     if effort:
@@ -318,9 +320,13 @@ def main():
             except json.JSONDecodeError:
                 args = {}
             if name == 'get_examples':
-                pattern = (args.get('pattern') or '').strip()[:250]
-                investigated.add(pattern)
-                result = get_examples(raw_cache, pattern)
+                row = int(args.get('row') or 0)
+                item = worklist_by_row.get(row)
+                if item is None:
+                    result = f'Строки {row} нет в рабочем списке.'
+                else:
+                    investigated.add(row)
+                    result = get_examples(raw_cache, item['pattern'])
             elif name == 'prod_exec':
                 result = tool_prod_exec(config, args.get('command', ''))
                 logging.info('prod_exec: %s', args.get('command', '')[:200])
@@ -333,7 +339,7 @@ def main():
                 needs_investigation = (
                     item is not None and item['d1'] > 0
                     and args.get('cause') != 'обрезки сообщений'
-                    and item['pattern'][:250] not in investigated
+                    and row not in investigated
                 )
                 if needs_investigation:
                     result = ('ОТКЛОНЕНО: активная группа без расследования. Сначала '
@@ -351,9 +357,10 @@ def main():
                     result = f'ok, вердикт записан в строку {row}'
             elif name == 'write_digest':
                 text = (args.get('text') or '').strip()[:3950]
+                budget_exceeded = usage['prompt'] > MAX_PROMPT_BUDGET
                 if len(text) < 200:
                     result = 'ОТКЛОНЕНО: дайджест подозрительно короткий, напиши полноценный.'
-                elif verdicts_written < len(worklist):
+                elif verdicts_written < len(worklist) and not budget_exceeded:
                     result = (f'ОТКЛОНЕНО: вердикты записаны только для {verdicts_written} '
                               f'из {len(worklist)} групп — сначала заверши триаж.')
                 elif test_mode:
@@ -373,6 +380,12 @@ def main():
                                "output": str(result)[:MAX_TOOL_OUTPUT]})
         if digest_written:
             break
+        if usage['prompt'] > MAX_PROMPT_BUDGET:
+            logging.warning('Бюджет токенов исчерпан (%s) — требуем немедленный дайджест.',
+                            usage['prompt'])
+            input_list.append({"role": "user", "content":
+                               "БЮДЖЕТ ИСЧЕРПАН. Прекрати расследования и немедленно "
+                               "вызови write_digest с тем, что уже известно."})
 
     logging.info('Готово: вердиктов %s/%s, дайджест: %s, шагов: %s',
                  verdicts_written, len(worklist), digest_written, step + 1)
