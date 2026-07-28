@@ -26,6 +26,7 @@ from collections import defaultdict
 from datetime import datetime
 
 import gspread
+import httpx
 from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
 
@@ -253,8 +254,13 @@ def main():
         p = normalize_error_pattern(m['text'])[:250]
         raw_cache[p].append((m['date'], m['text']))
 
-    client = OpenAI(api_key=config['openai_api_key'])
-    logging.info('Модель: %s, effort: %s, test_mode: %s', model, effort, test_mode)
+    # OpenAI блокирует регион сервера — ходим через локальный прокси-пул
+    # (тот же, что для Telegram). Отключается пустым значением openai_proxy.
+    proxy = config.get('openai_proxy', 'socks5://127.0.0.1:8080')
+    http_client = httpx.Client(proxy=proxy, timeout=180) if proxy else None
+    client = OpenAI(api_key=config['openai_api_key'], http_client=http_client)
+    logging.info('Модель: %s, effort: %s, test_mode: %s, proxy: %s',
+                 model, effort, test_mode, bool(proxy))
 
     user_msg = (
         f"Всего логов за сутки: {total_1d}, из них известный фон: {bg_1d}.\n"
