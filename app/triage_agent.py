@@ -6,7 +6,7 @@
   1. Берёт из Groups группы «не обработано» + всплески (до MAX_GROUPS).
   2. Расследует: сырые примеры из Original data, полные логи/код на
      прод-сервере по SSH (СТРОГО только чтение), SELECT-only запросы в MySQL.
-  3. Пишет вердикты в Groups (G–L) и дайджест дня в Digest (A1 дата, A2 текст).
+  3. Пишет вердикты в Groups (H–M) и дайджест дня в Digest (A1 дата, A2 текст).
 
 Ограничители зашиты кодом, не промптом: белый список команд, запрет записи,
 принудительный LIMIT в SQL, потолок шагов и размера выводов.
@@ -117,18 +117,33 @@ def open_spreadsheet(config):
     return gspread.authorize(creds).open_by_key(config['google_sheet_id'])
 
 
+def sheet_cols(rows):
+    """Индексы колонок по именам заголовка (порядок колонок может меняться)."""
+    header = rows[0] if rows else []
+    idx = {name.strip(): i for i, name in enumerate(header) if name.strip()}
+
+    def get(row, name):
+        i = idx.get(name)
+        return row[i].strip() if i is not None and len(row) > i else ''
+
+    return get
+
+
 def build_worklist(rows):
     """Группы на разбор: «не обработано» + всплески (×3 к среднему за 30д)."""
+    col = sheet_cols(rows)
     work, spikes = [], []
     for i, r in enumerate(rows[1:], start=2):
-        if len(r) < 13 or not r[1].strip():
+        pattern = col(r, 'Ошибка (шаблон)')
+        if not pattern:
             continue
-        d1 = int(r[2] or 0) if (r[2] or '').isdigit() else 0
-        d30 = int(r[4] or 0) if (r[4] or '').isdigit() else 0
-        item = {'row': i, 'id': r[12], 'pattern': r[1][:250], 'd1': d1,
-                'd7': r[3], 'd30': d30, 'status': r[6].strip(),
-                'verdict': r[7].strip(), 'action': r[10][:200]}
-        if r[6].strip() == 'не обработано':
+        d1 = int(col(r, 'За 1 день') or 0) if col(r, 'За 1 день').isdigit() else 0
+        d30 = int(col(r, 'За 30 дней') or 0) if col(r, 'За 30 дней').isdigit() else 0
+        status = col(r, 'Статус')
+        item = {'row': i, 'id': col(r, 'ID'), 'pattern': pattern[:250], 'd1': d1,
+                'd7': col(r, 'За 7 дней'), 'd30': d30, 'status': status,
+                'verdict': col(r, 'Вердикт'), 'action': col(r, 'Действие')[:200]}
+        if status == 'не обработано':
             work.append(item)
         elif d1 >= 10 and d30 > 0 and d1 >= 3 * max(d30 / 30.0, 1):
             spikes.append(item)
@@ -237,13 +252,15 @@ def main():
     groups_ws = ss.worksheet('Groups')
     rows = groups_ws.get_all_values()
     worklist, n_backlog, n_spikes = build_worklist(rows)
-    total_1d = sum(int(r[2] or 0) for r in rows[1:] if len(r) > 2 and (r[2] or '').isdigit())
-    bg_1d = sum(int(r[2] or 0) for r in rows[1:]
-                if len(r) > 7 and (r[2] or '').isdigit() and r[7].strip().lower() == 'игнорировать')
+    col = sheet_cols(rows)
+    d1_of = lambda r: int(col(r, 'За 1 день')) if col(r, 'За 1 день').isdigit() else 0
+    total_1d = sum(d1_of(r) for r in rows[1:])
+    bg_1d = sum(d1_of(r) for r in rows[1:] if col(r, 'Вердикт').lower() == 'игнорировать')
     # Контекст: актуальные «действовать» (для блока «Со вчера» и связывания инцидентов)
-    acting = [f"#{r[12]} строка {i}: [{r[2]}/1д] {r[1][:100]} | {r[10][:150]}"
+    acting = [f"#{col(r, 'ID')} строка {i}: [{d1_of(r)}/1д] {col(r, 'Ошибка (шаблон)')[:100]} "
+              f"| {col(r, 'Действие')[:150]}"
               for i, r in enumerate(rows[1:], start=2)
-              if len(r) > 12 and r[7].strip() == 'действовать' and int(r[2] or 0) > 0][:25]
+              if col(r, 'Вердикт') == 'действовать' and d1_of(r) > 0][:25]
 
     # Кэш сырых примеров
     raw_rows = ss.worksheet('Original data').get_all_values()
@@ -350,7 +367,7 @@ def main():
                         test_verdicts.append(args)
                     else:
                         groups_ws.batch_update([{
-                            'range': f'G{row}:L{row}',
+                            'range': f'H{row}:M{row}',
                             'values': [['обработано', args['verdict'], args.get('urgency', ''),
                                         args['cause'], args['action'][:900], today]]}])
                     verdicts_written += 1

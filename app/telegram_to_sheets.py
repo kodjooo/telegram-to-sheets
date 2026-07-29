@@ -87,9 +87,9 @@ def clean_log(text):
 from normalize import merge_fragment_chains, normalize_error_pattern  # noqa: E402
 
 GROUPS_HEADER = [
-    "Категория", "Ошибка (шаблон)",
+    "ID", "Категория", "Ошибка (шаблон)",
     "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление",
-    "Статус", "Вердикт", "Срочность", "Причина", "Действие", "Оценено", "ID",
+    "Статус", "Вердикт", "Срочность", "Причина", "Действие", "Оценено",
 ]
 
 
@@ -514,15 +514,29 @@ async def main():
         #   сохраняются как есть;
         # - группы без появлений дольше RETENTION_DAYS уезжают в Archive.
         group_rows_all = await retry_gspread(sheet_groups.get_all_values)
+        # Колонки читаем ПО ИМЕНАМ: порядок колонок менялся (ID переехал в начало),
+        # позиционное чтение затирало бы ручные вердикты при переходе.
+        old_header = group_rows_all[0] if group_rows_all else []
+        col_idx = {name.strip(): i for i, name in enumerate(old_header) if name.strip()}
+
+        def old_col(row, name):
+            i = col_idx.get(name)
+            return row[i].strip() if i is not None and len(row) > i else ''
+
         existing_groups = {}  # шаблон -> сохранённые ручные колонки
         for row in group_rows_all[1:]:
-            if len(row) < 2 or not row[1].strip():
+            pattern = old_col(row, 'Ошибка (шаблон)')
+            if not pattern:
                 continue
-            row += [''] * (len(GROUPS_HEADER) - len(row))
-            existing_groups[row[1].strip()] = {
-                'category': row[0], 'last_seen': row[5], 'status': row[6],
-                'verdict': row[7], 'urgency': row[8],
-                'cause': row[9], 'action': row[10], 'assessed': row[11],
+            existing_groups[pattern] = {
+                'category': old_col(row, 'Категория'),
+                'last_seen': old_col(row, 'Последнее появление'),
+                'status': old_col(row, 'Статус'),
+                'verdict': old_col(row, 'Вердикт'),
+                'urgency': old_col(row, 'Срочность'),
+                'cause': old_col(row, 'Причина'),
+                'action': old_col(row, 'Действие'),
+                'assessed': old_col(row, 'Оценено'),
             }
 
         now_utc = datetime.now(timezone.utc)
@@ -540,15 +554,14 @@ async def main():
                 status = 'не обработано' if not verdict.strip() else 'обработано'
             s = saved or {}
             return [
-                category, pattern,
+                group_id(pattern), category, pattern,
                 str(counts['1d']), str(counts['7d']), str(counts['30d']), last_seen,
                 status, verdict, s.get('urgency', ''),
                 s.get('cause', ''), s.get('action', ''), s.get('assessed', ''),
-                group_id(pattern),
             ]
 
-        # ПОРЯДОК СТРОК СТАБИЛЬНЫЙ: существующие группы сохраняют свои позиции
-        # (ссылки на строки в дайджестах не съезжают), новые дописываются вниз.
+        # Порядок строк: сортировка по «За 1 день» (по требованию владельца).
+        # Ориентир в дайджестах — колонка ID (первая), а не номер строки.
         zero = {'1d': 0, '7d': 0, '30d': 0}
         for pattern, saved in existing_groups.items():
             data = error_data.get(pattern)
@@ -585,6 +598,11 @@ async def main():
                 await update_range(spreadsheet, f'{ARCHIVE_SHEET_TITLE}!A1:M1', [GROUPS_HEADER])
             await retry_gspread(sheet_archive.append_rows, archive_rows)
             logging.info(f"В архив перенесено групп: {len(archive_rows)}")
+
+        # Сортировка по «За 1 день», затем по «За 30 дней»
+        d1_i = GROUPS_HEADER.index('За 1 день')
+        d30_i = GROUPS_HEADER.index('За 30 дней')
+        final_rows.sort(key=lambda r: (int(r[d1_i] or 0), int(r[d30_i] or 0)), reverse=True)
 
         # Полная перезапись Groups (архив уже сохранён, потеря невозможна)
         await retry_gspread(sheet_groups.clear)
