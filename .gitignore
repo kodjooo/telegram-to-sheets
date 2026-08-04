@@ -14,6 +14,8 @@ logs/
 app/last_message_id.txt
 app/last_message_id*.txt
 app/daily_summary.lock
+app/triage_agent.lock
+app/*.lock
 app/daily_summary_state.json
 app/alert_last_id.txt
 app/alert_state.json
