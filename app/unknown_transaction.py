@@ -93,8 +93,8 @@ ids_for_dash_group = []
 # каждый тип ОДИН раз и удаляет строку через 30 дней после ПЕРВОГО появления.
 HISTORY_SHEET = 'Unknown tx history'
 HISTORY_HEADER = [
-    'ID', 'Платформа', 'operation_type_name', 'supplier_oper_name',
-    'doc_type_name', 'bonus_type_name',
+    'ID', 'Платформа', 'operation_type', 'operation_type_name',
+    'supplier_oper_name', 'doc_type_name', 'bonus_type_name',
     'Первый раз', 'Последний раз', 'Всего логов', 'Сумма ₽', 'Комментарий',
 ]
 HISTORY_RETENTION_DAYS = 30
@@ -158,7 +158,7 @@ def update_history(spreadsheet, groups_data):
         if first < cutoff:
             continue  # протух — не переносим
         out.append([
-            rid, key[0], key[2], key[3], key[1], key[5],
+            rid, key[0], key[1], key[3], key[4], key[2], key[6],
             first, last or first, str(total), f'{amount:.2f}',
             cell(prev, 'Комментарий') if prev else '',
         ])
@@ -170,7 +170,7 @@ def update_history(spreadsheet, groups_data):
         if cell(row, 'Первый раз') and cell(row, 'Первый раз') >= cutoff:
             out.append([cell(row, name) for name in HISTORY_HEADER])
 
-    out.sort(key=lambda r: (r[7], r[6]), reverse=True)  # свежие сверху
+    out.sort(key=lambda r: (r[8], r[7]), reverse=True)  # свежие сверху
     sheet.clear()
     sheet.append_rows([HISTORY_HEADER] + out)
     logging.info('История неучтённых операций: %s типов (новых: %s)', len(out), added)
@@ -180,12 +180,13 @@ def update_history(spreadsheet, groups_data):
 try:
     sheet_tx = spreadsheet.worksheet('Unknown tx')
 except gspread.exceptions.WorksheetNotFound:
-    sheet_tx = spreadsheet.add_worksheet(title='Unknown tx', rows='100', cols='10')
+    sheet_tx = spreadsheet.add_worksheet(title='Unknown tx', rows='100', cols='12')
 else:
     sheet_tx.clear()
 
 sheet_tx.append_row([
     'Платформа (ВБ/ОЗОН/Некорректный лог)',
+    'operation_type',
     'doc_type_name',
     'operation_type_name',
     'supplier_oper_name',
@@ -224,6 +225,7 @@ for row in data:
 
     key = (
         platform,
+        operation_type or '—',
         doc_type or '—',
         operation_type_name or '—',
         supplier or '—',
