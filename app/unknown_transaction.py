@@ -1,3 +1,4 @@
+import hashlib
 import json
 import re
 import os
@@ -81,8 +82,99 @@ def extract_from_json(field, text):
         match = re.search(pattern, text)
         return match.group(1) if match else ''
 
-groups = defaultdict(lambda: {'1d': 0, '30d': 0})
+groups = defaultdict(lambda: {'1d': 0, '30d': 0, 'amount': 0.0,
+                              'first': None, 'last': None})
 ids_for_dash_group = []
+
+# ===== История неучтённых операций (вкладка Unknown tx history) =====
+# Зачем: суточная вкладка Unknown tx перезаписывается каждый запуск, и типы,
+# появившиеся в выходные, к понедельнику видны только нулями, а через 30 дней
+# (когда сырые логи уедут из Original data) исчезают вовсе. История хранит
+# каждый тип ОДИН раз и удаляет строку через 30 дней после ПЕРВОГО появления.
+HISTORY_SHEET = 'Unknown tx history'
+HISTORY_HEADER = [
+    'ID', 'Платформа', 'operation_type_name', 'supplier_oper_name',
+    'doc_type_name', 'bonus_type_name',
+    'Первый раз', 'Последний раз', 'Всего логов', 'Сумма ₽', 'Комментарий',
+]
+HISTORY_RETENTION_DAYS = 30
+
+
+def history_id(key) -> str:
+    return hashlib.sha1('|'.join(key).encode('utf-8')).hexdigest()[:8]
+
+
+def update_history(spreadsheet, groups_data):
+    """Upsert типов в историю: новые добавляются, у известных обновляются
+    «Последний раз», счётчик и сумма. Комментарий (ручная колонка) не трогаем.
+    Строки старше HISTORY_RETENTION_DAYS от первого появления удаляются."""
+    today = datetime.now().strftime('%Y-%m-%d')
+    try:
+        sheet = spreadsheet.worksheet(HISTORY_SHEET)
+    except gspread.exceptions.WorksheetNotFound:
+        sheet = spreadsheet.add_worksheet(title=HISTORY_SHEET, rows='500', cols='12')
+        sheet.append_row(HISTORY_HEADER)
+
+    existing_rows = sheet.get_all_values()
+    header = existing_rows[0] if existing_rows else HISTORY_HEADER
+    idx = {name.strip(): i for i, name in enumerate(header) if name.strip()}
+
+    def cell(row, name, default=''):
+        i = idx.get(name)
+        return row[i].strip() if i is not None and len(row) > i else default
+
+    known = {}
+    for row in existing_rows[1:]:
+        rid = cell(row, 'ID')
+        if rid:
+            known[rid] = row
+
+    cutoff = (datetime.now() - timedelta(days=HISTORY_RETENTION_DAYS)).strftime('%Y-%m-%d')
+    out, seen, added = [], set(), 0
+
+    for key, stats in groups_data.items():
+        if key[0] == 'Некорректный лог':
+            continue  # это не тип операции, а битый лог
+        rid = history_id(key)
+        seen.add(rid)
+        prev = known.get(rid)
+        first = cell(prev, 'Первый раз', today) if prev else today
+        # Счётчик копим по суткам; повторный запуск в тот же день не удваивает
+        prev_total = 0
+        prev_amount = 0.0
+        if prev:
+            try:
+                prev_total = int(cell(prev, 'Всего логов') or 0)
+                prev_amount = float((cell(prev, 'Сумма ₽') or '0').replace(' ', '').replace(',', '.'))
+            except ValueError:
+                pass
+            already_today = cell(prev, 'Последний раз') == today
+        else:
+            already_today = False
+            added += 1
+        total = prev_total if already_today else prev_total + stats['1d']
+        amount = prev_amount if already_today else prev_amount + stats['amount']
+        last = today if stats['1d'] else cell(prev, 'Последний раз', '') if prev else ''
+        if first < cutoff:
+            continue  # протух — не переносим
+        out.append([
+            rid, key[0], key[2], key[3], key[1], key[5],
+            first, last or first, str(total), f'{amount:.2f}',
+            cell(prev, 'Комментарий') if prev else '',
+        ])
+
+    # Типы, которых сегодня не было в окне, но которые ещё не протухли
+    for rid, row in known.items():
+        if rid in seen:
+            continue
+        if cell(row, 'Первый раз') and cell(row, 'Первый раз') >= cutoff:
+            out.append([cell(row, name) for name in HISTORY_HEADER])
+
+    out.sort(key=lambda r: (r[7], r[6]), reverse=True)  # свежие сверху
+    sheet.clear()
+    sheet.append_rows([HISTORY_HEADER] + out)
+    logging.info('История неучтённых операций: %s типов (новых: %s)', len(out), added)
+    print(f"История неучтённых операций обновлена: {len(out)} типов (новых: {added}).")
 
 # Подготовка листа (очистка до начала обработки)
 try:
@@ -150,6 +242,11 @@ for row in data:
 
     if log_time >= cutoff_1d:
         groups[key]['1d'] += 1
+        amount_raw = extract_from_json('amount', text)
+        try:
+            groups[key]['amount'] += float(str(amount_raw).replace(',', '.'))
+        except (TypeError, ValueError):
+            pass
 
     if platform == 'Некорректный лог':
         ids_for_dash_group.append(row[id_col_index])
@@ -167,3 +264,10 @@ for key, stats in sorted_keys:
     sheet_tx.append_row(row)
 
 print("Сводка по 'Unknown transaction type' успешно записана.")
+
+# История неучтённых операций (отдельная вкладка, живёт 30 дней от первого появления)
+try:
+    update_history(spreadsheet, groups)
+except Exception as exc:
+    logging.error('Не удалось обновить историю неучтённых операций: %s', exc, exc_info=True)
+    print(f"Ошибка обновления истории: {exc}")
