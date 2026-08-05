@@ -90,6 +90,7 @@ GROUPS_HEADER = [
     "ID", "Категория", "Ошибка (шаблон)",
     "За 1 день", "За 7 дней", "За 30 дней", "Последнее появление",
     "Статус", "Вердикт", "Срочность", "Причина", "Действие", "Оценено",
+    "Впервые в действовать",
 ]
 
 
@@ -450,7 +451,7 @@ async def main():
         # Гарантированно добавим заголовки, если пусто
         group_values = await retry_gspread(sheet_groups.get_all_values)
         if not group_values or not any(cell.strip() for cell in group_values[0]):
-            await update_range(spreadsheet, 'Groups!A1:M1', [GROUPS_HEADER])
+            await update_range(spreadsheet, 'Groups!A1:N1', [GROUPS_HEADER])
 
         category_rules = await load_category_rules(spreadsheet)
 
@@ -537,6 +538,7 @@ async def main():
                 'cause': old_col(row, 'Причина'),
                 'action': old_col(row, 'Действие'),
                 'assessed': old_col(row, 'Оценено'),
+                'acting_since': old_col(row, 'Впервые в действовать'),
             }
 
         now_utc = datetime.now(timezone.utc)
@@ -553,11 +555,20 @@ async def main():
             if not status:
                 status = 'не обработано' if not verdict.strip() else 'обработано'
             s = saved or {}
+            # «Впервые в действовать»: ставится в день, когда группа получила
+            # вердикт «действовать», и держится, пока вердикт не сменится.
+            # По ней считается «висит N дней» в блоке 🔁 дайджеста.
+            acting_since = s.get('acting_since', '').strip()
+            if verdict.strip().lower() == 'действовать':
+                acting_since = acting_since or datetime.now().strftime('%Y-%m-%d')
+            else:
+                acting_since = ''
             return [
                 group_id(pattern), category, pattern,
                 str(counts['1d']), str(counts['7d']), str(counts['30d']), last_seen,
                 status, verdict, s.get('urgency', ''),
                 s.get('cause', ''), s.get('action', ''), s.get('assessed', ''),
+                acting_since,
             ]
 
         # Порядок строк: сортировка по «За 1 день» (по требованию владельца).
@@ -595,7 +606,7 @@ async def main():
             except gspread.exceptions.WorksheetNotFound:
                 sheet_archive = await retry_gspread(
                     spreadsheet.add_worksheet, title=ARCHIVE_SHEET_TITLE, rows='1000', cols='20')
-                await update_range(spreadsheet, f'{ARCHIVE_SHEET_TITLE}!A1:M1', [GROUPS_HEADER])
+                await update_range(spreadsheet, f'{ARCHIVE_SHEET_TITLE}!A1:N1', [GROUPS_HEADER])
             await retry_gspread(sheet_archive.append_rows, archive_rows)
             logging.info(f"В архив перенесено групп: {len(archive_rows)}")
 
