@@ -266,6 +266,12 @@ def main():
     # Тестовый режим (сравнение моделей): ничего не пишем в таблицу,
     # вердикты и дайджест — в файлы logs/, идемпотентность отключена.
     test_mode = bool(os.environ.get('TRIAGE_TEST'))
+    # Разовые прогоны: подменить день недели (для категории «системный отказ»,
+    # которая штатно разбирается по понедельникам), разобрать ТОЛЬКО системные
+    # отказы и не трогать вкладку Digest (вердикты при этом пишутся как обычно).
+    weekday_override = os.environ.get('TRIAGE_WEEKDAY')
+    only_systemic = bool(os.environ.get('TRIAGE_ONLY_SYSTEMIC'))
+    no_digest = bool(os.environ.get('TRIAGE_NO_DIGEST'))
     model = os.environ.get('TRIAGE_MODEL') or config.get('openai_model', 'gpt-5.1')
     effort = os.environ.get('TRIAGE_EFFORT') or config.get('openai_reasoning_effort', 'low')
 
@@ -274,7 +280,7 @@ def main():
     today = datetime.now().strftime('%Y-%m-%d')
     try:
         digest_ws = ss.worksheet('Digest')
-        if not test_mode and (digest_ws.acell('A1').value or '').strip() == today:
+        if not test_mode and not no_digest and (digest_ws.acell('A1').value or '').strip() == today:
             logging.info('Дайджест за %s уже записан — выходим.', today)
             return
     except gspread.exceptions.WorksheetNotFound:
@@ -282,7 +288,11 @@ def main():
 
     groups_ws = ss.worksheet('Groups')
     rows = groups_ws.get_all_values()
-    worklist, n_backlog, n_spikes, n_systemic = build_worklist(rows)
+    worklist, n_backlog, n_spikes, n_systemic = build_worklist(
+        rows, weekday=int(weekday_override) if weekday_override else None)
+    if only_systemic:
+        worklist = [it for it in worklist if 'системный' in it['kind']]
+        n_backlog = n_spikes = 0
     col = sheet_cols(rows)
     d1_of = lambda r: int(col(r, 'За 1 день')) if col(r, 'За 1 день').isdigit() else 0
     total_1d = sum(d1_of(r) for r in rows[1:])
@@ -412,7 +422,7 @@ def main():
                 elif verdicts_written < len(worklist) and not budget_exceeded:
                     result = (f'ОТКЛОНЕНО: вердикты записаны только для {verdicts_written} '
                               f'из {len(worklist)} групп — сначала заверши триаж.')
-                elif test_mode:
+                elif test_mode or no_digest:
                     path = os.path.join(BASE_DIR, f'logs/digest_test_{model}_{effort}.md')
                     with open(path, 'w', encoding='utf-8') as f:
                         f.write(text + '\n\n===ВЕРДИКТЫ===\n' +
