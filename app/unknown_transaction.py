@@ -197,7 +197,15 @@ def update_history(spreadsheet, groups_data):
         if rid in seen:
             continue
         if cell(row, 'Первый раз') and cell(row, 'Первый раз') >= cutoff:
-            out.append([cell(row, name) for name in HISTORY_HEADER])
+            carried = [cell(row, name) for name in HISTORY_HEADER]
+            # У строк, перенесённых из прежней истории, новых колонок нет —
+            # расшифровываем их из сохранённого operation_type.
+            dec = decode_ozon_type(cell(row, 'operation_type'))
+            for col_name, value in zip(('Категория Ozon', 'type_id', 'Пометка'), dec):
+                pos = HISTORY_HEADER.index(col_name)
+                if not carried[pos]:
+                    carried[pos] = value
+            out.append(carried)
 
     out.sort(key=lambda r: (r[11], r[10]), reverse=True)  # свежие сверху
     sheet.clear()
