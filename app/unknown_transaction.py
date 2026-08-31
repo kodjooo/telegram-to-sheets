@@ -82,6 +82,33 @@ def extract_from_json(field, text):
         match = re.search(pattern, text)
         return match.group(1) if match else ''
 
+
+# ===== Расшифровка синтетических имён Ozon =====
+# Приложение не всегда получает от Ozon строковое имя операции: новый Finance API
+# отдаёт числовой type_id + справочник /v1/finance/accrual/types. Когда type_id не
+# нашёлся в нашем маппинге, AccrualToOperationAdapter склеивает имя-заглушку
+# ('OzonAccrual' + категория + 'Type' + type_id). Такого имени у Ozon НЕ существует,
+# поэтому для аналитика вытаскиваем обратно настоящий ключ: категорию и номер типа.
+SYNTH_TYPE_RE = re.compile(r'^OzonAccrual(ITEM|NON_ITEM|CONTAINER|POSTING)Type(\d*)$')
+SYNTH_CATEGORY_RE = re.compile(r'^OzonAccrualUnknownCategory(.+)$')
+
+
+def decode_ozon_type(operation_type: str):
+    """Возвращает (категория, type_id, пометка) для синтетических имён Ozon.
+    Для настоящих имён операций возвращает пустые значения — расшифровывать нечего."""
+    op = (operation_type or '').strip()
+    m = SYNTH_TYPE_RE.match(op)
+    if m:
+        category, type_id = m.group(1), m.group(2)
+        if type_id:
+            return category, type_id, 'номер типа из справочника Ozon'
+        return category, '', 'Ozon не прислал type_id — идентификатора нет'
+    m = SYNTH_CATEGORY_RE.match(op)
+    if m:
+        return m.group(1), '', 'неизвестная категория начисления (не номер типа)'
+    return '', '', ''
+
+
 groups = defaultdict(lambda: {'1d': 0, '30d': 0, 'amount': 0.0,
                               'first': None, 'last': None})
 ids_for_dash_group = []
@@ -93,7 +120,8 @@ ids_for_dash_group = []
 # каждый тип ОДИН раз и удаляет строку через 30 дней после ПЕРВОГО появления.
 HISTORY_SHEET = 'Unknown tx history'
 HISTORY_HEADER = [
-    'ID', 'Платформа', 'operation_type', 'operation_type_name',
+    'ID', 'Платформа', 'Категория Ozon', 'type_id', 'Пометка',
+    'operation_type', 'operation_type_name',
     'supplier_oper_name', 'doc_type_name', 'bonus_type_name',
     'Первый раз', 'Последний раз', 'Всего логов', 'Сумма ₽', 'Комментарий',
 ]
@@ -157,8 +185,9 @@ def update_history(spreadsheet, groups_data):
         last = today if stats['1d'] else cell(prev, 'Последний раз', '') if prev else ''
         if first < cutoff:
             continue  # протух — не переносим
+        dec = decode_ozon_type(key[1])
         out.append([
-            rid, key[0], key[1], key[3], key[4], key[2], key[6],
+            rid, key[0], dec[0], dec[1], dec[2], key[1], key[3], key[4], key[2], key[6],
             first, last or first, str(total), f'{amount:.2f}',
             cell(prev, 'Комментарий') if prev else '',
         ])
@@ -170,7 +199,7 @@ def update_history(spreadsheet, groups_data):
         if cell(row, 'Первый раз') and cell(row, 'Первый раз') >= cutoff:
             out.append([cell(row, name) for name in HISTORY_HEADER])
 
-    out.sort(key=lambda r: (r[8], r[7]), reverse=True)  # свежие сверху
+    out.sort(key=lambda r: (r[11], r[10]), reverse=True)  # свежие сверху
     sheet.clear()
     sheet.append_rows([HISTORY_HEADER] + out)
     logging.info('История неучтённых операций: %s типов (новых: %s)', len(out), added)
@@ -186,6 +215,9 @@ else:
 
 sheet_tx.append_row([
     'Платформа (ВБ/ОЗОН/Некорректный лог)',
+    'Категория Ozon',
+    'type_id',
+    'Пометка',
     'operation_type',
     'doc_type_name',
     'operation_type_name',
@@ -259,10 +291,12 @@ sorted_keys = sorted(groups.items(), key=lambda x: (platform_priority.get(x[0][0
 
 # Запись строк
 for key, stats in sorted_keys:
+    decoded = decode_ozon_type(key[1])
+    base = [key[0]] + list(decoded) + list(key[1:])
     if key[0] == 'Некорректный лог':
-        row = list(key) + [stats['1d'], ', '.join(ids_for_dash_group)]
+        row = base + [stats['1d'], ', '.join(ids_for_dash_group)]
     else:
-        row = list(key) + [stats['1d'], '']
+        row = base + [stats['1d'], '']
     sheet_tx.append_row(row)
 
 print("Сводка по 'Unknown transaction type' успешно записана.")
