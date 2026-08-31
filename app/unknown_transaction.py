@@ -83,32 +83,6 @@ def extract_from_json(field, text):
         return match.group(1) if match else ''
 
 
-# ===== Расшифровка синтетических имён Ozon =====
-# Приложение не всегда получает от Ozon строковое имя операции: новый Finance API
-# отдаёт числовой type_id + справочник /v1/finance/accrual/types. Когда type_id не
-# нашёлся в нашем маппинге, AccrualToOperationAdapter склеивает имя-заглушку
-# ('OzonAccrual' + категория + 'Type' + type_id). Такого имени у Ozon НЕ существует,
-# поэтому для аналитика вытаскиваем обратно настоящий ключ: категорию и номер типа.
-SYNTH_TYPE_RE = re.compile(r'^OzonAccrual(ITEM|NON_ITEM|CONTAINER|POSTING)Type(\d*)$')
-SYNTH_CATEGORY_RE = re.compile(r'^OzonAccrualUnknownCategory(.+)$')
-
-
-def decode_ozon_type(operation_type: str) -> str:
-    """Разворачивает синтетическое имя в настоящий ключ Ozon для показа
-    в колонке operation_type. Настоящие имена операций возвращает как есть."""
-    op = (operation_type or '').strip()
-    m = SYNTH_TYPE_RE.match(op)
-    if m:
-        category, type_id = m.group(1), m.group(2)
-        if type_id:
-            return f'type_id {type_id} ({category}) — искать в справочнике Ozon'
-        return f'категория {category} без type_id — Ozon не прислал идентификатор'
-    m = SYNTH_CATEGORY_RE.match(op)
-    if m:
-        return f'категория начисления {m.group(1)} — не номер типа, нет ветки в разборе'
-    return op
-
-
 groups = defaultdict(lambda: {'1d': 0, '30d': 0, 'amount': 0.0,
                               'first': None, 'last': None})
 ids_for_dash_group = []
@@ -185,7 +159,7 @@ def update_history(spreadsheet, groups_data):
         if first < cutoff:
             continue  # протух — не переносим
         out.append([
-            rid, key[0], decode_ozon_type(key[1]), key[3], key[4], key[2], key[6],
+            rid, key[0], key[1], key[3], key[4], key[2], key[6],
             first, last or first, str(total), f'{amount:.2f}',
             cell(prev, 'Комментарий') if prev else '',
         ])
@@ -195,12 +169,7 @@ def update_history(spreadsheet, groups_data):
         if rid in seen:
             continue
         if cell(row, 'Первый раз') and cell(row, 'Первый раз') >= cutoff:
-            carried = [cell(row, name) for name in HISTORY_HEADER]
-            # Перенесённые строки могли сохраниться с синтетическим именем —
-            # показываем настоящий ключ.
-            pos = HISTORY_HEADER.index('operation_type')
-            carried[pos] = decode_ozon_type(carried[pos])
-            out.append(carried)
+            out.append([cell(row, name) for name in HISTORY_HEADER])
 
     out.sort(key=lambda r: (r[8], r[7]), reverse=True)  # свежие сверху
     sheet.clear()
@@ -291,7 +260,7 @@ sorted_keys = sorted(groups.items(), key=lambda x: (platform_priority.get(x[0][0
 
 # Запись строк
 for key, stats in sorted_keys:
-    base = [key[0], decode_ozon_type(key[1])] + list(key[2:])
+    base = list(key)
     if key[0] == 'Некорректный лог':
         row = base + [stats['1d'], ', '.join(ids_for_dash_group)]
     else:
