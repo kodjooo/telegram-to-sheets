@@ -27,6 +27,10 @@ RUN mkdir -p /app/logs
 # Установка переменной окружения для временной зоны
 ENV TZ=Europe/Moscow
 
+# Cron не наследует переменные окружения контейнера. Настраиваем системную
+# временную зону, иначе задания и их журналы смещаются на UTC.
+RUN ln -snf /usr/share/zoneinfo/${TZ} /etc/localtime && echo "${TZ}" > /etc/timezone
+
 # Копирование crontab файла и установка cron заданий
 COPY crontab /etc/cron.d/telegram-app-cron
 RUN chmod 0644 /etc/cron.d/telegram-app-cron && \
