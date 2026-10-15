@@ -31,6 +31,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 from openai import OpenAI
 
 from normalize import merge_fragment_chains, normalize_error_pattern
+from unknown_tx_stats import aggregate_unknown_transactions, format_unknown_tx_summary
 
 BASE_DIR = '/app'
 CONFIG_PATH = os.path.join(BASE_DIR, 'config.json')
@@ -355,6 +356,10 @@ def main():
 
     # Кэш сырых примеров
     raw_rows = ss.worksheet('Original data').get_all_values()
+    unknown_groups, _ = aggregate_unknown_transactions(raw_rows[1:])
+    unknown_summary = format_unknown_tx_summary(unknown_groups)
+    unknown_line = (unknown_summary +
+                    f' [вкладка Unknown tx](https://docs.google.com/spreadsheets/d/{config["google_sheet_id"]}/edit#gid={UNKNOWN_TX_GID})')
     logs = [{'id': int(r[0]), 'date': r[1], 'text': r[2]}
             for r in raw_rows[1:] if len(r) >= 3 and r[0].strip().isdigit()]
     raw_cache = defaultdict(list)
@@ -371,6 +376,7 @@ def main():
                  model, effort, test_mode, bool(proxy))
 
     user_msg = (
+        f"Точный счётчик Unknown tx из Original data за последние 24 часа (UTC): {unknown_summary}\n"
         f"Всего логов за сутки: {total_1d}, из них известный фон: {bg_1d}.\n"
         f"Групп на разбор: {len(worklist)} (бэклог: {n_backlog}, всплески: {n_spikes}, системные отказы: {n_systemic}).\n\n"
         "СПИСОК ГРУПП (row | id | за 1д/7д/30д | категория отбора | статус | старый вердикт | шаблон):\n" +
@@ -466,6 +472,11 @@ def main():
             elif name == 'write_digest':
                 text = (args.get('text') or '').strip()[:3950]
                 budget_exceeded = usage['prompt'] > MAX_PROMPT_BUDGET
+                # Счётчики операций считаем по датам, независимо от примеров модели.
+                if '💸' in text:
+                    text = re.sub(r'^.*💸.*$', lambda _: unknown_line, text, flags=re.MULTILINE)
+                else:
+                    text += '\n\n' + unknown_line
                 if len(text) < 200:
                     result = 'ОТКЛОНЕНО: дайджест подозрительно короткий, напиши полноценный.'
                 elif verdicts_written < len(worklist) and not budget_exceeded:
