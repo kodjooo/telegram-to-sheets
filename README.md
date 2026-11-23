@@ -345,3 +345,26 @@ telegram-to-sheets/
 Счётчики и ID во вкладке `Unknown tx` учитывают только последние 24 часа: даты `Original data` трактуются как UTC, будущие записи исключаются. Строка 💸 в новых дайджестах вычисляется кодом из тех же исходных логов, независимо от примеров агента. Вкладка обновляется при запуске `unknown_transaction.py` (по cron в 06:19 МСК); между запусками это снимок на момент расчёта.
 
 При обновлении скопируйте также `app/unknown_tx_stats.py`: он используется обоими скриптами. Для пересчёта вкладки выполните `docker exec telegram-to-sheets-app python unknown_transaction.py`; пересборка контейнера для этих Python-файлов не требуется.
+
+### Триаж: радиус, плановые синки и MONITORING (23.11.2026)
+
+`triage_agent.py` использует серверный read-only шлюз (`prod_time`, `prod_version`, `prod_grep`, `prod_read`, `prod_sql`) и отдельный ключ `/root/.ssh-triage/id_ed25519`. Старый доступ через произвольные shell-команды не возвращается. SQL выполняется как `triage_ro@localhost`.
+
+Радиус отказов извлекается из сериализованного PHP-свойства `accountId";i:...` через `REGEXP_SUBSTR`, а не поиск JSON-ключей. Для залпа 5xx/таймаутов в плановых `SyncOrdersJob`, `TransactionOnlineJob`, `SyncTransactionsJob`, `SyncProductsJob`, `SyncWarehousesJob` отчёт рекомендует наблюдение за штатными повторами планировщика; старые payload из `failed_jobs` не переотправляются. Восстановление проверяется по `account_sync_schedule.last_success_at` после последнего отказа.
+
+Активные MONITORING-сигналы заново попадают в рабочий список независимо от старого статуса и величины всплеска. JSON в `Original data` сохраняется; `get_examples` выделяет `statistics_id`, `data_source`, `sendable`, `sent` до обрезки текста и показывает разные пары отдельно. Для понижения `[weekly-mail]` код проверяет все пары за последние 24 часа в production: полное покрытие, отсутствие незавершённых строк и число отправленных не меньше ранее отправленных плюс готовых писем. Ошибка доступа, неполный результат, неизвестный контекст или незавершённая рассылка запрещают понижение. Непроверенный MONITORING остаётся «действовать» с задачей проверки; это не утверждение подтверждённых потерь. Остальные виды MONITORING требуют отдельной проверки и автоматически не понижаются.
+
+Блок `👀 Наблюдаем` формируется кодом из всех активных наблюдаемых групп (максимум три), с учётом новых вердиктов, количеством за сутки из Groups и ссылкой на строку. Нормализация и ID групп не меняются. Отчёт длиннее лимита отклоняется для сокращения, а не обрезается посреди обязательного блока.
+
+Администраторам production: на 23.11.2026 подтверждён отказ SELECT на трёх таблицах. Следующие права нужны для проверки восстановления (выполняет администратор, бот их не выдаёт):
+
+```sql
+GRANT SELECT (account_id, data_type, last_success_at, last_error_at, consecutive_failures, next_sync_at)
+ON appsellerdata.account_sync_schedule TO 'triage_ro'@'localhost';
+GRANT SELECT (id, data_source, period_from, period_to, report_sent_at)
+ON appsellerdata.account_report_statistics TO 'triage_ro'@'localhost';
+GRANT SELECT (id, account_report_statistics_id, account_id, status, email_sent_at, send_attempts)
+ON appsellerdata.account_report_statistics_data TO 'triage_ro'@'localhost';
+```
+
+При деплое установить вместе `triage_agent.py`, `triage_context.py`, `triage_monitoring.py`; Python-файлы примонтированы в контейнер, пересборка не нужна. Проверка без публикации: `TRIAGE_TEST=1` (пишет только тестовый дайджест и вердикты в файл; не отправляет Telegram-сообщений).
